@@ -1,0 +1,8 @@
+/vendor/
+/node_modules/
+/.phpunit.result.cache
+/.idea/
+/.vscode/
+
+public_html/*
+!public_html/mcpfm.php

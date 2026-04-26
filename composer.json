@@ -1,0 +1,21 @@
+{
+  "name": "owner/mcpfilemanager",
+  "description": "Single-file PHP MCP file manager development scaffold.",
+  "type": "project",
+  "require": {
+    "php": "^7.4 || ^8.0"
+  },
+  "scripts": {
+    "serve": "@php -S 127.0.0.1:8787 -t public_html dev/server/router.php",
+    "lint": "@php dev/qa/lint.php",
+    "test": "powershell -NoProfile -ExecutionPolicy Bypass -File dev/tests/smoke.ps1",
+    "qa": [
+      "@composer lint",
+      "@composer test"
+    ]
+  },
+  "config": {
+    "process-timeout": 0,
+    "sort-packages": true
+  }
+}

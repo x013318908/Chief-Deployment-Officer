@@ -1,0 +1,11 @@
+{
+  "name": "mcpfilemanager-devtools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "mcp:inspect": "mcp-inspector"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/inspector": "^0.21.2"
+  }
+}

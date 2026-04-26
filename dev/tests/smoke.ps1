@@ -1,0 +1,463 @@
+$ErrorActionPreference = 'Stop'
+
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+Set-Location $repoRoot
+
+function Assert-True {
+    param(
+        [bool] $Condition,
+        [string] $Message
+    )
+
+    if (-not $Condition) {
+        throw $Message
+    }
+}
+
+function Get-FreePort {
+    for ($port = 18080; $port -lt 18120; $port++) {
+        try {
+            $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Parse('127.0.0.1'), $port)
+            $listener.Start()
+            $listener.Stop()
+            return $port
+        } catch {
+        }
+    }
+
+    throw 'Could not find an available port.'
+}
+
+function Invoke-SmokeRequest {
+    param(
+        [string] $Url,
+        [string] $Method,
+        [hashtable] $Headers = @{},
+        [string] $Body = ''
+    )
+
+    $params = @{
+        Uri = $Url
+        Method = $Method
+        UseBasicParsing = $true
+        TimeoutSec = 5
+        ErrorAction = 'Stop'
+    }
+
+    if ($Headers.Count -gt 0) {
+        $params['Headers'] = @{}
+
+        foreach ($key in $Headers.Keys) {
+            if ($key -ne 'Content-Type') {
+                $params['Headers'][$key] = $Headers[$key]
+            }
+        }
+    }
+
+    if ($Method -ne 'GET' -and $Body -ne '') {
+        $params['Body'] = $Body
+    }
+
+    if ($Headers.ContainsKey('Content-Type')) {
+        $params['ContentType'] = $Headers['Content-Type']
+    }
+
+    try {
+        $response = Invoke-WebRequest @params
+        return [pscustomobject]@{
+            StatusCode = [int] $response.StatusCode
+            Content = [string] $response.Content
+            Headers = $response.Headers
+        }
+    } catch {
+        $httpResponse = $_.Exception.Response
+
+        if (-not $httpResponse) {
+            throw
+        }
+
+        $statusCode = [int] $httpResponse.StatusCode
+        $content = ''
+        $stream = $httpResponse.GetResponseStream()
+
+        if ($stream) {
+            $reader = New-Object System.IO.StreamReader($stream)
+            try {
+                $content = $reader.ReadToEnd()
+            } finally {
+                $reader.Dispose()
+            }
+        }
+
+        $headers = @{}
+
+        foreach ($headerName in $httpResponse.Headers.AllKeys) {
+            $headers[$headerName] = $httpResponse.Headers[$headerName]
+        }
+
+        $httpResponse.Close()
+
+        return [pscustomobject]@{
+            StatusCode = $statusCode
+            Content = $content
+            Headers = $headers
+        }
+    }
+}
+
+function Invoke-JsonRpcTool {
+    param(
+        [string] $Url,
+        [int] $Id,
+        [string] $ToolName,
+        [hashtable] $Arguments = @{},
+        [string] $BearerToken = '',
+        [string] $BearerHeaderName = 'Authorization'
+    )
+
+    $headers = @{
+        Accept = 'application/json, text/event-stream'
+        'Content-Type' = 'application/json'
+        'MCP-Protocol-Version' = '2025-11-25'
+    }
+
+    if ($BearerToken -ne '') {
+        if ($BearerHeaderName -eq 'Authorization') {
+            $headers[$BearerHeaderName] = 'Bearer ' + $BearerToken
+        } else {
+            $headers[$BearerHeaderName] = $BearerToken
+        }
+    }
+
+    $body = @{
+        jsonrpc = '2.0'
+        id = $Id
+        method = 'tools/call'
+        params = @{
+            name = $ToolName
+            arguments = $Arguments
+        }
+    } | ConvertTo-Json -Depth 8 -Compress
+
+    return Invoke-SmokeRequest -Url $Url -Method 'POST' -Headers $headers -Body $body
+}
+
+function Get-ToolNames {
+    param([string] $Content)
+
+    $json = $Content | ConvertFrom-Json
+    $names = @()
+
+    foreach ($tool in $json.result.tools) {
+        $names += [string] $tool.name
+    }
+
+    return $names
+}
+
+function Remove-IfExists {
+    param([string] $Path)
+
+    if (Test-Path $Path) {
+        Remove-Item $Path -Force -Recurse
+    }
+}
+
+$entrypoint = Join-Path $repoRoot 'public_html\mcpfm.php'
+$router = Join-Path $repoRoot 'dev\server\router.php'
+$tmpDir = Join-Path $repoRoot 'dev\tests\tmp'
+$authFile = Join-Path $tmpDir 'smoke-auth.json'
+$debugLog = Join-Path $tmpDir 'smoke-debug.log'
+$visibleDotFile = Join-Path $repoRoot 'public_html\.smoke-visible.txt'
+$fixtureDir = Join-Path $repoRoot 'public_html\smoke-fixture'
+$fixtureFile = Join-Path $fixtureDir 'alpha.txt'
+$fixtureDotFile = Join-Path $fixtureDir '.beta.txt'
+$nestedDir = Join-Path $fixtureDir 'nested'
+$nestedFile = Join-Path $nestedDir 'inside.txt'
+
+Assert-True (Test-Path $entrypoint) "Missing entrypoint: $entrypoint"
+Assert-True (Test-Path $router) "Missing router: $router"
+
+New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+Remove-IfExists $authFile
+Remove-IfExists $debugLog
+Remove-IfExists $visibleDotFile
+Remove-IfExists $fixtureDir
+
+Set-Content -Path $visibleDotFile -Value 'visible-root-dot'
+New-Item -ItemType Directory -Path $fixtureDir | Out-Null
+New-Item -ItemType Directory -Path $nestedDir | Out-Null
+Set-Content -Path $fixtureFile -Value 'alpha'
+Set-Content -Path $fixtureDotFile -Value 'beta'
+Set-Content -Path $nestedFile -Value 'inside'
+
+$previousAuthPath = $env:MCPFM_AUTH_STATE_PATH
+$previousDebugPath = $env:MCPFM_DEBUG_LOG_PATH
+$env:MCPFM_AUTH_STATE_PATH = $authFile
+$env:MCPFM_DEBUG_LOG_PATH = $debugLog
+
+$port = Get-FreePort
+$serverProcess = Start-Process -FilePath 'php' `
+    -ArgumentList '-S', ("127.0.0.1:" + $port), '-t', 'public_html', 'dev/server/router.php' `
+    -WorkingDirectory $repoRoot `
+    -PassThru
+
+$rootUrl = "http://127.0.0.1:$port/"
+$mcpUrl = "http://127.0.0.1:$port/mcp"
+$fileUrl = "http://127.0.0.1:$port/mcpfm.php"
+
+try {
+    Start-Sleep -Seconds 3
+
+    $probe = Invoke-SmokeRequest -Url $rootUrl -Method 'GET'
+    Assert-True ($probe.StatusCode -eq 200) "PHP built-in server did not become ready. Status=$($probe.StatusCode)"
+
+    $html = Invoke-SmokeRequest -Url $rootUrl -Method 'GET'
+    Assert-True ($html.StatusCode -eq 200) 'GET / should return 200.'
+    Assert-True ($html.Content.Contains('MCP File Manager')) 'HTML response should contain app name.'
+    Assert-True ($html.Content.Contains('request_auth')) 'HTML response should mention request_auth.'
+    Assert-True ($html.Content.Contains('list_dir')) 'HTML response should mention list_dir.'
+
+    $favicon = Invoke-SmokeRequest -Url ("http://127.0.0.1:$port/favicon.ico") -Method 'GET'
+    Assert-True ($favicon.StatusCode -eq 204) 'GET /favicon.ico should return 204.'
+
+    $oauthMetadata = Invoke-SmokeRequest -Url ("http://127.0.0.1:$port/.well-known/oauth-protected-resource/mcp") -Method 'GET'
+    Assert-True ($oauthMetadata.StatusCode -eq 404) 'OAuth protected resource metadata should return 404 until OAuth is implemented.'
+    $oauthMetadataJson = $oauthMetadata.Content | ConvertFrom-Json
+    Assert-True ($oauthMetadataJson.error -eq 'oauth_not_implemented') 'OAuth protected resource metadata should return a JSON error body.'
+
+    $eventStreamGet = Invoke-SmokeRequest -Url $mcpUrl -Method 'GET' -Headers @{
+        Accept = 'text/event-stream'
+    }
+    Assert-True ($eventStreamGet.StatusCode -eq 405) 'GET /mcp with text/event-stream should return 405.'
+
+    $legacySseGet = Invoke-SmokeRequest -Url ("http://127.0.0.1:$port/sse") -Method 'GET' -Headers @{
+        Accept = 'text/event-stream'
+    }
+    Assert-True ($legacySseGet.StatusCode -eq 405) 'GET /sse should resolve to the entrypoint and return 405.'
+
+    $initializeBody = @{
+        jsonrpc = '2.0'
+        id = 1
+        method = 'initialize'
+        params = @{
+            protocolVersion = '2025-11-25'
+            capabilities = @{}
+            clientInfo = @{
+                name = 'smoke-test'
+                version = '1.0.0'
+            }
+        }
+    } | ConvertTo-Json -Depth 8 -Compress
+
+    $initialize = Invoke-SmokeRequest -Url $mcpUrl -Method 'POST' -Headers @{
+        Accept = 'application/json, text/event-stream'
+        'Content-Type' = 'application/json'
+    } -Body $initializeBody
+    Assert-True ($initialize.StatusCode -eq 200) 'initialize should return 200.'
+
+    $initializeJson = $initialize.Content | ConvertFrom-Json
+    Assert-True ($initializeJson.result.protocolVersion -eq '2025-11-25') 'initialize should negotiate the expected protocol version.'
+    Assert-True ($initializeJson.result.serverInfo.name -eq 'MCP File Manager') 'initialize should expose the server name.'
+
+    $initializedBody = @{
+        jsonrpc = '2.0'
+        method = 'notifications/initialized'
+    } | ConvertTo-Json -Depth 4 -Compress
+
+    $initialized = Invoke-SmokeRequest -Url $mcpUrl -Method 'POST' -Headers @{
+        Accept = 'application/json, text/event-stream'
+        'Content-Type' = 'application/json'
+        'MCP-Protocol-Version' = '2025-11-25'
+    } -Body $initializedBody
+    Assert-True ($initialized.StatusCode -eq 202) 'initialized notification should return 202.'
+
+    $pingBody = @{
+        jsonrpc = '2.0'
+        id = 2
+        method = 'ping'
+    } | ConvertTo-Json -Depth 4 -Compress
+
+    $ping = Invoke-SmokeRequest -Url $mcpUrl -Method 'POST' -Headers @{
+        Accept = 'application/json, text/event-stream'
+        'Content-Type' = 'application/json'
+        'MCP-Protocol-Version' = '2025-11-25'
+    } -Body $pingBody
+    Assert-True ($ping.StatusCode -eq 200) 'ping should return 200.'
+
+    $toolsListBody = @{
+        jsonrpc = '2.0'
+        id = 3
+        method = 'tools/list'
+    } | ConvertTo-Json -Depth 4 -Compress
+
+    $toolsList = Invoke-SmokeRequest -Url $mcpUrl -Method 'POST' -Headers @{
+        Accept = 'application/json, text/event-stream'
+        'Content-Type' = 'application/json'
+        'MCP-Protocol-Version' = '2025-11-25'
+    } -Body $toolsListBody
+    Assert-True ($toolsList.StatusCode -eq 200) 'tools/list should return 200 before auth.'
+
+    $toolNames = Get-ToolNames -Content $toolsList.Content
+    Assert-True ($toolNames -contains 'server_status') 'tools/list should expose server_status before auth.'
+    Assert-True ($toolNames -contains 'request_auth') 'tools/list should expose request_auth before auth.'
+    Assert-True (-not ($toolNames -contains 'list_dir')) 'tools/list should not expose list_dir before auth.'
+
+    $unauthorizedListDir = Invoke-JsonRpcTool -Url $mcpUrl -Id 4 -ToolName 'list_dir'
+    Assert-True ($unauthorizedListDir.StatusCode -eq 200) 'Unauthorized list_dir should still return JSON-RPC.'
+    $unauthorizedListDirJson = $unauthorizedListDir.Content | ConvertFrom-Json
+    Assert-True ($unauthorizedListDirJson.error.code -eq -32001) 'Unauthorized list_dir should return an auth error.'
+
+    $serverStatusBeforeAuth = Invoke-JsonRpcTool -Url $mcpUrl -Id 40 -ToolName 'server_status'
+    $serverStatusBeforeAuthJson = $serverStatusBeforeAuth.Content | ConvertFrom-Json
+    $serverStatusBeforeAuthData = $serverStatusBeforeAuthJson.result.structuredContent
+    Assert-True (-not $serverStatusBeforeAuthData.authorized) 'server_status should report unauthorized before auth.'
+    Assert-True (-not $serverStatusBeforeAuthData.authorizationHeaderPresent) 'server_status should report missing Authorization before auth.'
+    Assert-True (-not $serverStatusBeforeAuthData.authConfigured) 'server_status should report auth not configured before request_auth.'
+    Assert-True ($serverStatusBeforeAuthData.authReason -eq 'missing_state') 'server_status should explain that auth state is missing before request_auth.'
+
+    $requestAuth = Invoke-JsonRpcTool -Url $mcpUrl -Id 5 -ToolName 'request_auth' -Arguments @{
+        agentName = 'smoke-agent'
+    }
+    Assert-True ($requestAuth.StatusCode -eq 200) 'request_auth should return 200.'
+    $requestAuthJson = $requestAuth.Content | ConvertFrom-Json
+    $requestAuthData = $requestAuthJson.result.structuredContent
+    Assert-True ($requestAuthData.status -eq 'pending_approval') 'First request_auth should create a pending approval.'
+    Assert-True (-not [string]::IsNullOrWhiteSpace($requestAuthData.approvalUrl)) 'request_auth should return an approval URL.'
+    Assert-True (-not [string]::IsNullOrWhiteSpace($requestAuthData.bearerToken)) 'request_auth should return a bearer token.'
+    Assert-True ($requestAuthData.preferredHeaderName -eq 'X-MCPFM-Bearer-Token') 'request_auth should expose the preferred Inspector header name.'
+    $approvalUrl = [string] $requestAuthData.approvalUrl
+    $bearerToken = [string] $requestAuthData.bearerToken
+
+    $requestAuthAgain = Invoke-JsonRpcTool -Url $mcpUrl -Id 6 -ToolName 'request_auth'
+    $requestAuthAgainJson = $requestAuthAgain.Content | ConvertFrom-Json
+    Assert-True ($requestAuthAgainJson.result.structuredContent.status -eq 'pending_approval') 'Pending request_auth should stay pending.'
+    Assert-True ($requestAuthAgainJson.result.structuredContent.approvalUrl -eq $approvalUrl) 'Pending request_auth should re-return the same approval URL.'
+    Assert-True ($requestAuthAgainJson.result.structuredContent.bearerToken -eq $bearerToken) 'Pending request_auth should re-return the same bearer token.'
+
+    $approvalGet = Invoke-SmokeRequest -Url $approvalUrl -Method 'GET'
+    Assert-True ($approvalGet.StatusCode -eq 200) 'Approval GET should return 200.'
+    Assert-True ($approvalGet.Content.Contains('MCP Approval')) 'Approval GET should render the approval page.'
+
+    $approvalPost = Invoke-SmokeRequest -Url $approvalUrl -Method 'POST' -Headers @{
+        'Content-Type' = 'application/x-www-form-urlencoded'
+    } -Body 'approve=yes'
+    Assert-True ($approvalPost.StatusCode -eq 200) 'Approval POST should return 200.'
+    Assert-True ($approvalPost.Content.Contains('Approval Complete')) 'Approval POST should render the success page.'
+
+    $serverStatusMissingHeader = Invoke-JsonRpcTool -Url $mcpUrl -Id 42 -ToolName 'server_status'
+    $serverStatusMissingHeaderJson = $serverStatusMissingHeader.Content | ConvertFrom-Json
+    $serverStatusMissingHeaderData = $serverStatusMissingHeaderJson.result.structuredContent
+    Assert-True ($serverStatusMissingHeaderData.authConfigured) 'server_status should report configured auth after approval.'
+    Assert-True ($serverStatusMissingHeaderData.authState -eq 'approved') 'server_status should expose the approved auth state after approval.'
+    Assert-True (-not $serverStatusMissingHeaderData.authorized) 'server_status should still report unauthorized without the header.'
+    Assert-True ($serverStatusMissingHeaderData.authReason -eq 'missing_token') 'server_status should explain that the bearer token was not sent.'
+
+    $toolsListAuthorized = Invoke-SmokeRequest -Url $mcpUrl -Method 'POST' -Headers @{
+        Accept = 'application/json, text/event-stream'
+        'Content-Type' = 'application/json'
+        'MCP-Protocol-Version' = '2025-11-25'
+        'X-MCPFM-Bearer-Token' = $bearerToken
+    } -Body $toolsListBody
+    $toolNamesAuthorized = Get-ToolNames -Content $toolsListAuthorized.Content
+    Assert-True ($toolNamesAuthorized -contains 'list_dir') 'Authorized tools/list should expose list_dir.'
+
+    $serverStatusAfterAuth = Invoke-JsonRpcTool -Url $mcpUrl -Id 41 -ToolName 'server_status' -BearerToken $bearerToken -BearerHeaderName 'X-MCPFM-Bearer-Token'
+    $serverStatusAfterAuthJson = $serverStatusAfterAuth.Content | ConvertFrom-Json
+    $serverStatusAfterAuthData = $serverStatusAfterAuthJson.result.structuredContent
+    Assert-True ($serverStatusAfterAuthData.authorized) 'server_status should report authorized with the correct bearer token.'
+    Assert-True ($serverStatusAfterAuthData.inspectorBearerHeaderPresent) 'server_status should report X-MCPFM-Bearer-Token header presence after auth.'
+    Assert-True ($serverStatusAfterAuthData.bearerHeaderSource -eq 'x-mcpfm-bearer-token') 'server_status should report the inspector header source.'
+    Assert-True ($serverStatusAfterAuthData.authReason -eq 'authorized') 'server_status should explain why auth succeeded.'
+
+    $serverStatusAuthorizationHeader = Invoke-JsonRpcTool -Url $mcpUrl -Id 43 -ToolName 'server_status' -BearerToken $bearerToken -BearerHeaderName 'Authorization'
+    $serverStatusAuthorizationHeaderJson = $serverStatusAuthorizationHeader.Content | ConvertFrom-Json
+    Assert-True ($serverStatusAuthorizationHeaderJson.result.structuredContent.bearerHeaderSource -eq 'authorization') 'server_status should still accept Authorization headers.'
+
+    $requestAuthConfigured = Invoke-JsonRpcTool -Url $mcpUrl -Id 7 -ToolName 'request_auth'
+    $requestAuthConfiguredJson = $requestAuthConfigured.Content | ConvertFrom-Json
+    Assert-True ($requestAuthConfiguredJson.result.structuredContent.status -eq 'already_configured') 'Unauthenticated request_auth should report already_configured after approval.'
+
+    $requestAuthApproved = Invoke-JsonRpcTool -Url $mcpUrl -Id 8 -ToolName 'request_auth' -BearerToken $bearerToken -BearerHeaderName 'X-MCPFM-Bearer-Token'
+    $requestAuthApprovedJson = $requestAuthApproved.Content | ConvertFrom-Json
+    Assert-True ($requestAuthApprovedJson.result.structuredContent.status -eq 'approved') 'Authenticated request_auth should report approved.'
+
+    $listRoot = Invoke-JsonRpcTool -Url $mcpUrl -Id 9 -ToolName 'list_dir' -BearerToken $bearerToken -BearerHeaderName 'X-MCPFM-Bearer-Token'
+    $listRootJson = $listRoot.Content | ConvertFrom-Json
+    Assert-True ($listRootJson.result.structuredContent.path -eq '.') 'Root list_dir should report path ".".'
+    $rootEntryNames = @($listRootJson.result.structuredContent.entries | ForEach-Object { [string] $_.name })
+    Assert-True ($rootEntryNames -contains '.smoke-visible.txt') 'Root list_dir should include general dotfiles.'
+    Assert-True ($rootEntryNames -contains 'smoke-fixture') 'Root list_dir should include the fixture directory.'
+    Assert-True (-not ($rootEntryNames -contains '.mcpfm_auth.json')) 'Root list_dir should hide .mcpfm_* internal files.'
+
+    $listFixture = Invoke-JsonRpcTool -Url $mcpUrl -Id 10 -ToolName 'list_dir' -BearerToken $bearerToken -BearerHeaderName 'X-MCPFM-Bearer-Token' -Arguments @{
+        path = 'smoke-fixture'
+    }
+    $listFixtureJson = $listFixture.Content | ConvertFrom-Json
+    Assert-True ($listFixtureJson.result.structuredContent.path -eq 'smoke-fixture') 'Subdirectory list_dir should report the requested relative path.'
+    $fixtureEntryNames = @($listFixtureJson.result.structuredContent.entries | ForEach-Object { [string] $_.name })
+    $fixtureEntryPaths = @($listFixtureJson.result.structuredContent.entries | ForEach-Object { [string] $_.path })
+    Assert-True ($fixtureEntryNames -contains 'alpha.txt') 'Subdirectory list_dir should include regular files.'
+    Assert-True ($fixtureEntryNames -contains '.beta.txt') 'Subdirectory list_dir should include dotfiles.'
+    Assert-True ($fixtureEntryNames -contains 'nested') 'Subdirectory list_dir should include direct child directories.'
+    Assert-True (-not ($fixtureEntryPaths -contains 'smoke-fixture/nested/inside.txt')) 'Subdirectory list_dir should not recurse into nested files.'
+
+    $invalidParent = Invoke-JsonRpcTool -Url $mcpUrl -Id 11 -ToolName 'list_dir' -BearerToken $bearerToken -BearerHeaderName 'X-MCPFM-Bearer-Token' -Arguments @{
+        path = '..'
+    }
+    $invalidParentJson = $invalidParent.Content | ConvertFrom-Json
+    Assert-True ($invalidParentJson.error.code -eq -32602) 'list_dir should reject parent directory paths.'
+
+    $invalidAbsolute = Invoke-JsonRpcTool -Url $mcpUrl -Id 12 -ToolName 'list_dir' -BearerToken $bearerToken -BearerHeaderName 'X-MCPFM-Bearer-Token' -Arguments @{
+        path = '/etc'
+    }
+    $invalidAbsoluteJson = $invalidAbsolute.Content | ConvertFrom-Json
+    Assert-True ($invalidAbsoluteJson.error.code -eq -32602) 'list_dir should reject absolute paths.'
+
+    $missingDir = Invoke-JsonRpcTool -Url $mcpUrl -Id 13 -ToolName 'list_dir' -BearerToken $bearerToken -BearerHeaderName 'X-MCPFM-Bearer-Token' -Arguments @{
+        path = 'missing-dir'
+    }
+    $missingDirJson = $missingDir.Content | ConvertFrom-Json
+    Assert-True ($missingDirJson.error.code -eq -32602) 'list_dir should reject non-existent directories.'
+
+    $authState = Get-Content -Raw $authFile | ConvertFrom-Json
+    $authState.lastUsedAt = [int][DateTimeOffset]::UtcNow.AddDays(-31).ToUnixTimeSeconds()
+    $authState | ConvertTo-Json -Depth 8 | Set-Content -Path $authFile
+
+    $expiredList = Invoke-JsonRpcTool -Url $mcpUrl -Id 14 -ToolName 'list_dir' -BearerToken $bearerToken -BearerHeaderName 'X-MCPFM-Bearer-Token'
+    $expiredListJson = $expiredList.Content | ConvertFrom-Json
+    Assert-True ($expiredListJson.error.code -eq -32001) 'Expired auth should reject protected tools.'
+
+    $lockedRequestAuth = Invoke-JsonRpcTool -Url $mcpUrl -Id 15 -ToolName 'request_auth'
+    $lockedRequestAuthJson = $lockedRequestAuth.Content | ConvertFrom-Json
+    Assert-True ($lockedRequestAuthJson.result.structuredContent.status -eq 'locked') 'Expired auth should move request_auth into locked state.'
+
+    Assert-True (Test-Path $debugLog) 'Auth debugging should create .mcpfm_debug.log.'
+    $debugLogContent = Get-Content -Raw $debugLog
+    Assert-True ($debugLogContent.Contains('"event":"tools_list"')) 'Debug log should record tools/list decisions.'
+    Assert-True ($debugLogContent.Contains('"event":"auth_context"')) 'Debug log should record auth context decisions.'
+
+    Write-Output 'Smoke OK'
+} finally {
+    if ($serverProcess -and -not $serverProcess.HasExited) {
+        Stop-Process -Id $serverProcess.Id -ErrorAction SilentlyContinue
+    }
+
+    if ($null -eq $previousAuthPath -or $previousAuthPath -eq '') {
+        Remove-Item Env:\MCPFM_AUTH_STATE_PATH -ErrorAction SilentlyContinue
+    } else {
+        $env:MCPFM_AUTH_STATE_PATH = $previousAuthPath
+    }
+
+    if ($null -eq $previousDebugPath -or $previousDebugPath -eq '') {
+        Remove-Item Env:\MCPFM_DEBUG_LOG_PATH -ErrorAction SilentlyContinue
+    } else {
+        $env:MCPFM_DEBUG_LOG_PATH = $previousDebugPath
+    }
+
+    Remove-IfExists $authFile
+    Remove-IfExists $debugLog
+    Remove-IfExists $visibleDotFile
+    Remove-IfExists $fixtureDir
+    Remove-IfExists $tmpDir
+}
