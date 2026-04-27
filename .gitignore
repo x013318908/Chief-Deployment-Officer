@@ -5,4 +5,4 @@
 /.vscode/
 
 public_html/*
-!public_html/mcpfm.php
+!public_html/cdo.php

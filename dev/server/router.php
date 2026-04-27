@@ -7,7 +7,7 @@ $requestUri = (string) ($_SERVER['REQUEST_URI'] ?? '/');
 $path = rawurldecode((string) parse_url($requestUri, PHP_URL_PATH));
 $method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
 
-function mcpfm_dev_send_json(int $statusCode, array $payload): bool
+function cdo_dev_send_json(int $statusCode, array $payload): bool
 {
     http_response_code($statusCode);
     header('Content-Type: application/json; charset=utf-8');
@@ -49,7 +49,7 @@ foreach ($oauthDiscoveryPrefixes as $prefix) {
             return true;
         }
 
-        return mcpfm_dev_send_json(404, [
+        return cdo_dev_send_json(404, [
             'error' => 'oauth_not_implemented',
             'message' => 'OAuth and OIDC discovery endpoints are not implemented in this server.',
             'detail' => 'Use the request_auth MCP tool and then send Authorization: Bearer <token> manually.',
@@ -58,7 +58,7 @@ foreach ($oauthDiscoveryPrefixes as $prefix) {
     }
 }
 
-$defaultEntrypoint = $publicDir . DIRECTORY_SEPARATOR . 'mcpfm.php';
+$defaultEntrypoint = $publicDir . DIRECTORY_SEPARATOR . 'cdo.php';
 
 if (!is_file($defaultEntrypoint)) {
     http_response_code(404);
@@ -66,8 +66,8 @@ if (!is_file($defaultEntrypoint)) {
     return true;
 }
 
-$_SERVER['SCRIPT_NAME'] = '/mcpfm.php';
-$_SERVER['PHP_SELF'] = '/mcpfm.php';
+$_SERVER['SCRIPT_NAME'] = '/cdo.php';
+$_SERVER['PHP_SELF'] = '/cdo.php';
 $_SERVER['SCRIPT_FILENAME'] = $defaultEntrypoint;
 
 require $defaultEntrypoint;

@@ -163,12 +163,14 @@ function Remove-IfExists {
     }
 }
 
-$entrypoint = Join-Path $repoRoot 'public_html\mcpfm.php'
+$entrypoint = Join-Path $repoRoot 'public_html\cdo.php'
 $router = Join-Path $repoRoot 'dev\server\router.php'
 $tmpDir = Join-Path $repoRoot 'dev\tests\tmp'
 $authFile = Join-Path $tmpDir 'smoke-auth.json'
 $debugLog = Join-Path $tmpDir 'smoke-debug.log'
+$renamedEntrypoint = Join-Path $repoRoot 'public_html\chief-smoke.php'
 $visibleDotFile = Join-Path $repoRoot 'public_html\.smoke-visible.txt'
+$internalControlFile = Join-Path $repoRoot 'public_html\.cdo_secret.txt'
 $fixtureDir = Join-Path $repoRoot 'public_html\smoke-fixture'
 $fixtureFile = Join-Path $fixtureDir 'alpha.txt'
 $fixtureDotFile = Join-Path $fixtureDir '.beta.txt'
@@ -181,20 +183,24 @@ Assert-True (Test-Path $router) "Missing router: $router"
 New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
 Remove-IfExists $authFile
 Remove-IfExists $debugLog
+Remove-IfExists $renamedEntrypoint
 Remove-IfExists $visibleDotFile
+Remove-IfExists $internalControlFile
 Remove-IfExists $fixtureDir
 
+Copy-Item -Path $entrypoint -Destination $renamedEntrypoint -Force
 Set-Content -Path $visibleDotFile -Value 'visible-root-dot'
+Set-Content -Path $internalControlFile -Value 'internal-secret'
 New-Item -ItemType Directory -Path $fixtureDir | Out-Null
 New-Item -ItemType Directory -Path $nestedDir | Out-Null
 Set-Content -Path $fixtureFile -Value 'alpha'
 Set-Content -Path $fixtureDotFile -Value 'beta'
 Set-Content -Path $nestedFile -Value 'inside'
 
-$previousAuthPath = $env:MCPFM_AUTH_STATE_PATH
-$previousDebugPath = $env:MCPFM_DEBUG_LOG_PATH
-$env:MCPFM_AUTH_STATE_PATH = $authFile
-$env:MCPFM_DEBUG_LOG_PATH = $debugLog
+$previousAuthPath = $env:CDO_AUTH_STATE_PATH
+$previousDebugPath = $env:CDO_DEBUG_LOG_PATH
+$env:CDO_AUTH_STATE_PATH = $authFile
+$env:CDO_DEBUG_LOG_PATH = $debugLog
 
 $port = Get-FreePort
 $serverProcess = Start-Process -FilePath 'php' `
@@ -204,7 +210,8 @@ $serverProcess = Start-Process -FilePath 'php' `
 
 $rootUrl = "http://127.0.0.1:$port/"
 $mcpUrl = "http://127.0.0.1:$port/mcp"
-$fileUrl = "http://127.0.0.1:$port/mcpfm.php"
+$fileUrl = "http://127.0.0.1:$port/cdo.php"
+$renamedFileUrl = "http://127.0.0.1:$port/chief-smoke.php"
 
 try {
     Start-Sleep -Seconds 3
@@ -214,9 +221,27 @@ try {
 
     $html = Invoke-SmokeRequest -Url $rootUrl -Method 'GET'
     Assert-True ($html.StatusCode -eq 200) 'GET / should return 200.'
-    Assert-True ($html.Content.Contains('MCP File Manager')) 'HTML response should contain app name.'
+    Assert-True ($html.Content.Contains('Chief-Deployment-Officer')) 'HTML response should contain app name.'
     Assert-True ($html.Content.Contains('request_auth')) 'HTML response should mention request_auth.'
     Assert-True ($html.Content.Contains('list_dir')) 'HTML response should mention list_dir.'
+
+    $directFile = Invoke-SmokeRequest -Url $fileUrl -Method 'GET'
+    Assert-True ($directFile.StatusCode -eq 200) 'GET /cdo.php should return 200.'
+    Assert-True ($directFile.Content.Contains('Chief-Deployment-Officer')) 'Direct entrypoint response should contain app name.'
+
+    $renamedHtml = Invoke-SmokeRequest -Url $renamedFileUrl -Method 'GET'
+    Assert-True ($renamedHtml.StatusCode -eq 200) 'Renamed entrypoint should return 200.'
+    Assert-True ($renamedHtml.Content.Contains('chief-smoke.php')) 'Renamed entrypoint page should report its current filename.'
+
+    $renamedRequestAuth = Invoke-JsonRpcTool -Url $renamedFileUrl -Id 16 -ToolName 'request_auth' -Arguments @{
+        agentName = 'renamed-smoke-agent'
+    }
+    Assert-True ($renamedRequestAuth.StatusCode -eq 200) 'Renamed entrypoint request_auth should return 200.'
+    $renamedRequestAuthJson = $renamedRequestAuth.Content | ConvertFrom-Json
+    $renamedApprovalUrl = [string] $renamedRequestAuthJson.result.structuredContent.approvalUrl
+    Assert-True ($renamedApprovalUrl.Contains('/chief-smoke.php?cdo_approve=')) 'Renamed entrypoint should build approval URLs with the current filename.'
+    Remove-IfExists $authFile
+    Remove-IfExists $debugLog
 
     $favicon = Invoke-SmokeRequest -Url ("http://127.0.0.1:$port/favicon.ico") -Method 'GET'
     Assert-True ($favicon.StatusCode -eq 204) 'GET /favicon.ico should return 204.'
@@ -258,7 +283,7 @@ try {
 
     $initializeJson = $initialize.Content | ConvertFrom-Json
     Assert-True ($initializeJson.result.protocolVersion -eq '2025-11-25') 'initialize should negotiate the expected protocol version.'
-    Assert-True ($initializeJson.result.serverInfo.name -eq 'MCP File Manager') 'initialize should expose the server name.'
+    Assert-True ($initializeJson.result.serverInfo.name -eq 'Chief-Deployment-Officer') 'initialize should expose the server name.'
 
     $initializedBody = @{
         jsonrpc = '2.0'
@@ -302,11 +327,19 @@ try {
     Assert-True ($toolNames -contains 'server_status') 'tools/list should expose server_status before auth.'
     Assert-True ($toolNames -contains 'request_auth') 'tools/list should expose request_auth before auth.'
     Assert-True (-not ($toolNames -contains 'list_dir')) 'tools/list should not expose list_dir before auth.'
+    Assert-True (-not ($toolNames -contains 'read_file')) 'tools/list should not expose read_file before auth.'
 
     $unauthorizedListDir = Invoke-JsonRpcTool -Url $mcpUrl -Id 4 -ToolName 'list_dir'
     Assert-True ($unauthorizedListDir.StatusCode -eq 200) 'Unauthorized list_dir should still return JSON-RPC.'
     $unauthorizedListDirJson = $unauthorizedListDir.Content | ConvertFrom-Json
     Assert-True ($unauthorizedListDirJson.error.code -eq -32001) 'Unauthorized list_dir should return an auth error.'
+
+    $unauthorizedReadFile = Invoke-JsonRpcTool -Url $mcpUrl -Id 44 -ToolName 'read_file' -Arguments @{
+        path = 'smoke-fixture/alpha.txt'
+    }
+    Assert-True ($unauthorizedReadFile.StatusCode -eq 200) 'Unauthorized read_file should still return JSON-RPC.'
+    $unauthorizedReadFileJson = $unauthorizedReadFile.Content | ConvertFrom-Json
+    Assert-True ($unauthorizedReadFileJson.error.code -eq -32001) 'Unauthorized read_file should return an auth error.'
 
     $serverStatusBeforeAuth = Invoke-JsonRpcTool -Url $mcpUrl -Id 40 -ToolName 'server_status'
     $serverStatusBeforeAuthJson = $serverStatusBeforeAuth.Content | ConvertFrom-Json
@@ -325,7 +358,7 @@ try {
     Assert-True ($requestAuthData.status -eq 'pending_approval') 'First request_auth should create a pending approval.'
     Assert-True (-not [string]::IsNullOrWhiteSpace($requestAuthData.approvalUrl)) 'request_auth should return an approval URL.'
     Assert-True (-not [string]::IsNullOrWhiteSpace($requestAuthData.bearerToken)) 'request_auth should return a bearer token.'
-    Assert-True ($requestAuthData.preferredHeaderName -eq 'X-MCPFM-Bearer-Token') 'request_auth should expose the preferred Inspector header name.'
+    Assert-True ($requestAuthData.preferredHeaderName -eq 'X-CDO-Bearer-Token') 'request_auth should expose the preferred Inspector header name.'
     $approvalUrl = [string] $requestAuthData.approvalUrl
     $bearerToken = [string] $requestAuthData.bearerToken
 
@@ -357,17 +390,18 @@ try {
         Accept = 'application/json, text/event-stream'
         'Content-Type' = 'application/json'
         'MCP-Protocol-Version' = '2025-11-25'
-        'X-MCPFM-Bearer-Token' = $bearerToken
+        'X-CDO-Bearer-Token' = $bearerToken
     } -Body $toolsListBody
     $toolNamesAuthorized = Get-ToolNames -Content $toolsListAuthorized.Content
     Assert-True ($toolNamesAuthorized -contains 'list_dir') 'Authorized tools/list should expose list_dir.'
+    Assert-True ($toolNamesAuthorized -contains 'read_file') 'Authorized tools/list should expose read_file.'
 
-    $serverStatusAfterAuth = Invoke-JsonRpcTool -Url $mcpUrl -Id 41 -ToolName 'server_status' -BearerToken $bearerToken -BearerHeaderName 'X-MCPFM-Bearer-Token'
+    $serverStatusAfterAuth = Invoke-JsonRpcTool -Url $mcpUrl -Id 41 -ToolName 'server_status' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token'
     $serverStatusAfterAuthJson = $serverStatusAfterAuth.Content | ConvertFrom-Json
     $serverStatusAfterAuthData = $serverStatusAfterAuthJson.result.structuredContent
     Assert-True ($serverStatusAfterAuthData.authorized) 'server_status should report authorized with the correct bearer token.'
-    Assert-True ($serverStatusAfterAuthData.inspectorBearerHeaderPresent) 'server_status should report X-MCPFM-Bearer-Token header presence after auth.'
-    Assert-True ($serverStatusAfterAuthData.bearerHeaderSource -eq 'x-mcpfm-bearer-token') 'server_status should report the inspector header source.'
+    Assert-True ($serverStatusAfterAuthData.inspectorBearerHeaderPresent) 'server_status should report X-CDO-Bearer-Token header presence after auth.'
+    Assert-True ($serverStatusAfterAuthData.bearerHeaderSource -eq 'x-cdo-bearer-token') 'server_status should report the inspector header source.'
     Assert-True ($serverStatusAfterAuthData.authReason -eq 'authorized') 'server_status should explain why auth succeeded.'
 
     $serverStatusAuthorizationHeader = Invoke-JsonRpcTool -Url $mcpUrl -Id 43 -ToolName 'server_status' -BearerToken $bearerToken -BearerHeaderName 'Authorization'
@@ -378,19 +412,19 @@ try {
     $requestAuthConfiguredJson = $requestAuthConfigured.Content | ConvertFrom-Json
     Assert-True ($requestAuthConfiguredJson.result.structuredContent.status -eq 'already_configured') 'Unauthenticated request_auth should report already_configured after approval.'
 
-    $requestAuthApproved = Invoke-JsonRpcTool -Url $mcpUrl -Id 8 -ToolName 'request_auth' -BearerToken $bearerToken -BearerHeaderName 'X-MCPFM-Bearer-Token'
+    $requestAuthApproved = Invoke-JsonRpcTool -Url $mcpUrl -Id 8 -ToolName 'request_auth' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token'
     $requestAuthApprovedJson = $requestAuthApproved.Content | ConvertFrom-Json
     Assert-True ($requestAuthApprovedJson.result.structuredContent.status -eq 'approved') 'Authenticated request_auth should report approved.'
 
-    $listRoot = Invoke-JsonRpcTool -Url $mcpUrl -Id 9 -ToolName 'list_dir' -BearerToken $bearerToken -BearerHeaderName 'X-MCPFM-Bearer-Token'
+    $listRoot = Invoke-JsonRpcTool -Url $mcpUrl -Id 9 -ToolName 'list_dir' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token'
     $listRootJson = $listRoot.Content | ConvertFrom-Json
     Assert-True ($listRootJson.result.structuredContent.path -eq '.') 'Root list_dir should report path ".".'
     $rootEntryNames = @($listRootJson.result.structuredContent.entries | ForEach-Object { [string] $_.name })
     Assert-True ($rootEntryNames -contains '.smoke-visible.txt') 'Root list_dir should include general dotfiles.'
     Assert-True ($rootEntryNames -contains 'smoke-fixture') 'Root list_dir should include the fixture directory.'
-    Assert-True (-not ($rootEntryNames -contains '.mcpfm_auth.json')) 'Root list_dir should hide .mcpfm_* internal files.'
+    Assert-True (-not ($rootEntryNames -contains '.cdo_auth.json')) 'Root list_dir should hide .cdo_* internal files.'
 
-    $listFixture = Invoke-JsonRpcTool -Url $mcpUrl -Id 10 -ToolName 'list_dir' -BearerToken $bearerToken -BearerHeaderName 'X-MCPFM-Bearer-Token' -Arguments @{
+    $listFixture = Invoke-JsonRpcTool -Url $mcpUrl -Id 10 -ToolName 'list_dir' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
         path = 'smoke-fixture'
     }
     $listFixtureJson = $listFixture.Content | ConvertFrom-Json
@@ -402,19 +436,50 @@ try {
     Assert-True ($fixtureEntryNames -contains 'nested') 'Subdirectory list_dir should include direct child directories.'
     Assert-True (-not ($fixtureEntryPaths -contains 'smoke-fixture/nested/inside.txt')) 'Subdirectory list_dir should not recurse into nested files.'
 
-    $invalidParent = Invoke-JsonRpcTool -Url $mcpUrl -Id 11 -ToolName 'list_dir' -BearerToken $bearerToken -BearerHeaderName 'X-MCPFM-Bearer-Token' -Arguments @{
+    $readFixture = Invoke-JsonRpcTool -Url $mcpUrl -Id 45 -ToolName 'read_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-fixture/alpha.txt'
+    }
+    $readFixtureJson = $readFixture.Content | ConvertFrom-Json
+    $readFixtureData = $readFixtureJson.result.structuredContent
+    Assert-True ($readFixtureData.path -eq 'smoke-fixture/alpha.txt') 'read_file should report the requested path.'
+    Assert-True ($readFixtureData.name -eq 'alpha.txt') 'read_file should report the basename.'
+    Assert-True ($readFixtureData.encoding -eq 'utf-8') 'read_file should return text files as UTF-8.'
+    Assert-True ($readFixtureData.content.Contains('alpha')) 'read_file should return file content.'
+    Assert-True (-not $readFixtureData.truncated) 'read_file should not mark small files as truncated.'
+
+    $readFixtureTruncated = Invoke-JsonRpcTool -Url $mcpUrl -Id 46 -ToolName 'read_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-fixture/alpha.txt'
+        maxBytes = 2
+    }
+    $readFixtureTruncatedJson = $readFixtureTruncated.Content | ConvertFrom-Json
+    Assert-True ($readFixtureTruncatedJson.result.structuredContent.content -eq 'al') 'read_file should honor maxBytes.'
+    Assert-True ($readFixtureTruncatedJson.result.structuredContent.truncated) 'read_file should mark truncated reads.'
+
+    $readInternal = Invoke-JsonRpcTool -Url $mcpUrl -Id 47 -ToolName 'read_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = '.cdo_secret.txt'
+    }
+    $readInternalJson = $readInternal.Content | ConvertFrom-Json
+    Assert-True ($readInternalJson.error.code -eq -32602) 'read_file should reject internal control files.'
+
+    $readDirectory = Invoke-JsonRpcTool -Url $mcpUrl -Id 48 -ToolName 'read_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-fixture'
+    }
+    $readDirectoryJson = $readDirectory.Content | ConvertFrom-Json
+    Assert-True ($readDirectoryJson.error.code -eq -32602) 'read_file should reject directories.'
+
+    $invalidParent = Invoke-JsonRpcTool -Url $mcpUrl -Id 11 -ToolName 'list_dir' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
         path = '..'
     }
     $invalidParentJson = $invalidParent.Content | ConvertFrom-Json
     Assert-True ($invalidParentJson.error.code -eq -32602) 'list_dir should reject parent directory paths.'
 
-    $invalidAbsolute = Invoke-JsonRpcTool -Url $mcpUrl -Id 12 -ToolName 'list_dir' -BearerToken $bearerToken -BearerHeaderName 'X-MCPFM-Bearer-Token' -Arguments @{
+    $invalidAbsolute = Invoke-JsonRpcTool -Url $mcpUrl -Id 12 -ToolName 'list_dir' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
         path = '/etc'
     }
     $invalidAbsoluteJson = $invalidAbsolute.Content | ConvertFrom-Json
     Assert-True ($invalidAbsoluteJson.error.code -eq -32602) 'list_dir should reject absolute paths.'
 
-    $missingDir = Invoke-JsonRpcTool -Url $mcpUrl -Id 13 -ToolName 'list_dir' -BearerToken $bearerToken -BearerHeaderName 'X-MCPFM-Bearer-Token' -Arguments @{
+    $missingDir = Invoke-JsonRpcTool -Url $mcpUrl -Id 13 -ToolName 'list_dir' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
         path = 'missing-dir'
     }
     $missingDirJson = $missingDir.Content | ConvertFrom-Json
@@ -424,7 +489,7 @@ try {
     $authState.lastUsedAt = [int][DateTimeOffset]::UtcNow.AddDays(-31).ToUnixTimeSeconds()
     $authState | ConvertTo-Json -Depth 8 | Set-Content -Path $authFile
 
-    $expiredList = Invoke-JsonRpcTool -Url $mcpUrl -Id 14 -ToolName 'list_dir' -BearerToken $bearerToken -BearerHeaderName 'X-MCPFM-Bearer-Token'
+    $expiredList = Invoke-JsonRpcTool -Url $mcpUrl -Id 14 -ToolName 'list_dir' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token'
     $expiredListJson = $expiredList.Content | ConvertFrom-Json
     Assert-True ($expiredListJson.error.code -eq -32001) 'Expired auth should reject protected tools.'
 
@@ -432,7 +497,7 @@ try {
     $lockedRequestAuthJson = $lockedRequestAuth.Content | ConvertFrom-Json
     Assert-True ($lockedRequestAuthJson.result.structuredContent.status -eq 'locked') 'Expired auth should move request_auth into locked state.'
 
-    Assert-True (Test-Path $debugLog) 'Auth debugging should create .mcpfm_debug.log.'
+    Assert-True (Test-Path $debugLog) 'Auth debugging should create .cdo_debug.log.'
     $debugLogContent = Get-Content -Raw $debugLog
     Assert-True ($debugLogContent.Contains('"event":"tools_list"')) 'Debug log should record tools/list decisions.'
     Assert-True ($debugLogContent.Contains('"event":"auth_context"')) 'Debug log should record auth context decisions.'
@@ -444,20 +509,22 @@ try {
     }
 
     if ($null -eq $previousAuthPath -or $previousAuthPath -eq '') {
-        Remove-Item Env:\MCPFM_AUTH_STATE_PATH -ErrorAction SilentlyContinue
+        Remove-Item Env:\CDO_AUTH_STATE_PATH -ErrorAction SilentlyContinue
     } else {
-        $env:MCPFM_AUTH_STATE_PATH = $previousAuthPath
+        $env:CDO_AUTH_STATE_PATH = $previousAuthPath
     }
 
     if ($null -eq $previousDebugPath -or $previousDebugPath -eq '') {
-        Remove-Item Env:\MCPFM_DEBUG_LOG_PATH -ErrorAction SilentlyContinue
+        Remove-Item Env:\CDO_DEBUG_LOG_PATH -ErrorAction SilentlyContinue
     } else {
-        $env:MCPFM_DEBUG_LOG_PATH = $previousDebugPath
+        $env:CDO_DEBUG_LOG_PATH = $previousDebugPath
     }
 
     Remove-IfExists $authFile
     Remove-IfExists $debugLog
+    Remove-IfExists $renamedEntrypoint
     Remove-IfExists $visibleDotFile
+    Remove-IfExists $internalControlFile
     Remove-IfExists $fixtureDir
     Remove-IfExists $tmpDir
 }

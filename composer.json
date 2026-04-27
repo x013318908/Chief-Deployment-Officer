@@ -1,6 +1,6 @@
 {
-  "name": "owner/mcpfilemanager",
-  "description": "Single-file PHP MCP file manager development scaffold.",
+  "name": "owner/chief-deployment-officer",
+  "description": "Single-file PHP Chief-Deployment-Officer development scaffold.",
   "type": "project",
   "require": {
     "php": "^7.4 || ^8.0"
