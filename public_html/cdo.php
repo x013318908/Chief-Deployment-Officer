@@ -404,7 +404,7 @@ function cdo_render_default_page(): void
   <li>アプリバージョン: <code>{$appVersion}</code></li>
   <li>MCPプロトコル: <code>{$protocolVersion}</code></li>
   <li>公開ツール: <code>server_status</code>, <code>request_auth</code></li>
-  <li>保護ツール: <code>list_dir</code></li>
+  <li>保護ツール: <code>list_dir</code>, <code>read_file</code>, <code>write_file</code>, <code>create_dir</code></li>
   <li>QA: <code>composer qa</code></li>
 </ul>
 HTML;
@@ -806,6 +806,66 @@ function cdo_get_read_file_tool(): array
     ];
 }
 
+function cdo_get_write_file_tool(): array
+{
+    return [
+        'name' => 'write_file',
+        'title' => 'Write File',
+        'description' => 'Create or overwrite a file under the MCP entrypoint directory with path safeguards.',
+        'inputSchema' => [
+            'type' => 'object',
+            'properties' => [
+                'path' => ['type' => 'string'],
+                'content' => ['type' => 'string'],
+                'encoding' => [
+                    'type' => 'string',
+                    'enum' => ['utf-8', 'base64'],
+                ],
+                'overwrite' => ['type' => 'boolean'],
+            ],
+            'required' => ['path', 'content', 'encoding'],
+        ],
+        'outputSchema' => [
+            'type' => 'object',
+            'properties' => [
+                'path' => ['type' => 'string'],
+                'name' => ['type' => 'string'],
+                'encoding' => ['type' => 'string'],
+                'bytesWritten' => ['type' => 'integer'],
+                'overwritten' => ['type' => 'boolean'],
+            ],
+            'required' => ['path', 'name', 'encoding', 'bytesWritten', 'overwritten'],
+        ],
+    ];
+}
+
+function cdo_get_create_dir_tool(): array
+{
+    return [
+        'name' => 'create_dir',
+        'title' => 'Create Directory',
+        'description' => 'Create a directory under the MCP entrypoint directory.',
+        'inputSchema' => [
+            'type' => 'object',
+            'properties' => [
+                'path' => ['type' => 'string'],
+                'recursive' => ['type' => 'boolean'],
+            ],
+            'required' => ['path'],
+        ],
+        'outputSchema' => [
+            'type' => 'object',
+            'properties' => [
+                'path' => ['type' => 'string'],
+                'name' => ['type' => 'string'],
+                'created' => ['type' => 'boolean'],
+                'alreadyExisted' => ['type' => 'boolean'],
+            ],
+            'required' => ['path', 'name', 'created', 'alreadyExisted'],
+        ],
+    ];
+}
+
 function cdo_get_tools(array $authContext): array
 {
     $tools = cdo_get_public_tools();
@@ -813,6 +873,8 @@ function cdo_get_tools(array $authContext): array
     if ($authContext['isAuthorized']) {
         $tools[] = cdo_get_list_dir_tool();
         $tools[] = cdo_get_read_file_tool();
+        $tools[] = cdo_get_write_file_tool();
+        $tools[] = cdo_get_create_dir_tool();
     }
 
     return $tools;
@@ -966,6 +1028,49 @@ function cdo_resolve_existing_path(array $normalized): string
     return $targetPath;
 }
 
+function cdo_resolve_existing_ancestor_path(string $filesystemPath): string
+{
+    $candidate = $filesystemPath;
+
+    while (!file_exists($candidate)) {
+        $parent = dirname($candidate);
+
+        if ($parent === $candidate) {
+            throw new InvalidArgumentException('Path parent does not exist.');
+        }
+
+        $candidate = $parent;
+    }
+
+    $ancestorPath = realpath($candidate);
+
+    if (!is_string($ancestorPath)) {
+        throw new InvalidArgumentException('Path parent does not exist.');
+    }
+
+    $rootPath = realpath(cdo_app_root());
+
+    if (!is_string($rootPath)) {
+        throw new InvalidArgumentException('Entry point directory is not available.');
+    }
+
+    $rootPath = rtrim(str_replace('\\', '/', $rootPath), '/');
+    $ancestorPath = str_replace('\\', '/', $ancestorPath);
+    $rootPathForCompare = strtolower($rootPath);
+    $ancestorPathForCompare = strtolower($ancestorPath);
+
+    if ($ancestorPathForCompare !== $rootPathForCompare
+        && strpos($ancestorPathForCompare, $rootPathForCompare . '/') !== 0) {
+        throw new InvalidArgumentException('Path resolves outside the entrypoint directory.');
+    }
+
+    if (!is_dir($ancestorPath)) {
+        throw new InvalidArgumentException('Path parent is not a directory.');
+    }
+
+    return $ancestorPath;
+}
+
 function cdo_path_contains_internal_file(string $relativePath): bool
 {
     foreach (explode('/', $relativePath) as $segment) {
@@ -975,6 +1080,91 @@ function cdo_path_contains_internal_file(string $relativePath): bool
     }
 
     return false;
+}
+
+function cdo_current_entrypoint_path(): string
+{
+    $scriptFilename = (string) ($_SERVER['SCRIPT_FILENAME'] ?? __FILE__);
+    $entrypointPath = realpath($scriptFilename);
+
+    if (!is_string($entrypointPath)) {
+        $entrypointPath = $scriptFilename;
+    }
+
+    return strtolower(str_replace('\\', '/', $entrypointPath));
+}
+
+function cdo_target_is_current_entrypoint(string $filesystemPath): bool
+{
+    $targetPath = realpath($filesystemPath);
+
+    if (!is_string($targetPath)) {
+        $parentPath = realpath(dirname($filesystemPath));
+
+        if (!is_string($parentPath)) {
+            return false;
+        }
+
+        $targetPath = rtrim($parentPath, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . basename($filesystemPath);
+    }
+
+    return strtolower(str_replace('\\', '/', $targetPath)) === cdo_current_entrypoint_path();
+}
+
+function cdo_validate_writable_relative_path(array $normalized, string $operation): void
+{
+    $relativePath = (string) $normalized['relativePath'];
+
+    if ($relativePath === '.') {
+        throw new InvalidArgumentException($operation . ' path must not be the entrypoint directory.');
+    }
+
+    if (cdo_path_contains_internal_file($relativePath)) {
+        throw new InvalidArgumentException('Internal control files cannot be modified.');
+    }
+
+    if (cdo_target_is_current_entrypoint((string) $normalized['filesystemPath'])) {
+        throw new InvalidArgumentException('The current entrypoint file cannot be modified.');
+    }
+}
+
+function cdo_decode_write_content(array $params): array
+{
+    if (!isset($params['content']) || !is_string($params['content'])) {
+        throw new InvalidArgumentException('write_file content must be a string.');
+    }
+
+    if (!isset($params['encoding']) || !is_string($params['encoding'])) {
+        throw new InvalidArgumentException('write_file encoding must be "utf-8" or "base64".');
+    }
+
+    $encoding = $params['encoding'];
+
+    if ($encoding === 'utf-8') {
+        if (preg_match('//u', $params['content']) !== 1) {
+            throw new InvalidArgumentException('write_file content must be valid UTF-8.');
+        }
+
+        return [
+            'encoding' => $encoding,
+            'bytes' => $params['content'],
+        ];
+    }
+
+    if ($encoding === 'base64') {
+        $decoded = base64_decode($params['content'], true);
+
+        if (!is_string($decoded)) {
+            throw new InvalidArgumentException('write_file content must be valid base64.');
+        }
+
+        return [
+            'encoding' => $encoding,
+            'bytes' => $decoded,
+        ];
+    }
+
+    throw new InvalidArgumentException('write_file encoding must be "utf-8" or "base64".');
 }
 
 function cdo_list_dir_payload(array $params): array
@@ -1105,6 +1295,164 @@ function cdo_read_file_payload(array $params): array
         'content' => $encoding === 'utf-8' ? $content : base64_encode($content),
         'truncated' => $size > $bytesToRead,
         'bytesRead' => strlen($content),
+    ];
+}
+
+function cdo_write_file_payload(array $params): array
+{
+    if (!isset($params['path']) || !is_string($params['path'])) {
+        throw new InvalidArgumentException('write_file path must be a string.');
+    }
+
+    $overwrite = false;
+
+    if (isset($params['overwrite'])) {
+        if (!is_bool($params['overwrite'])) {
+            throw new InvalidArgumentException('write_file overwrite must be a boolean.');
+        }
+
+        $overwrite = $params['overwrite'];
+    }
+
+    $decoded = cdo_decode_write_content($params);
+    $normalized = cdo_normalize_relative_path($params['path']);
+    cdo_validate_writable_relative_path($normalized, 'write_file');
+
+    $filePath = (string) $normalized['filesystemPath'];
+    $relativePath = (string) $normalized['relativePath'];
+    $parentPath = dirname($filePath);
+    $resolvedParentPath = cdo_resolve_existing_ancestor_path($parentPath);
+
+    if (str_replace('\\', '/', realpath($parentPath) ?: '') !== str_replace('\\', '/', $resolvedParentPath)) {
+        throw new InvalidArgumentException('Parent directory does not exist.');
+    }
+
+    if (is_dir($filePath)) {
+        throw new InvalidArgumentException('write_file path points to a directory.');
+    }
+
+    $alreadyExists = is_file($filePath);
+
+    if ($alreadyExists && !$overwrite) {
+        throw new InvalidArgumentException('File already exists. Set overwrite to true to replace it.');
+    }
+
+    if (file_exists($filePath) && !$alreadyExists) {
+        throw new InvalidArgumentException('write_file path exists but is not a file.');
+    }
+
+    $temporaryPath = tempnam($resolvedParentPath, '.cdo_write_');
+
+    if (!is_string($temporaryPath)) {
+        throw new InvalidArgumentException('Temporary file could not be created.');
+    }
+
+    $handle = fopen($temporaryPath, 'wb');
+
+    if ($handle === false) {
+        @unlink($temporaryPath);
+        throw new InvalidArgumentException('Temporary file could not be opened.');
+    }
+
+    try {
+        $bytes = (string) $decoded['bytes'];
+        $bytesLength = strlen($bytes);
+        $offset = 0;
+
+        while ($offset < $bytesLength) {
+            $written = fwrite($handle, substr($bytes, $offset));
+
+            if ($written === false || $written === 0) {
+                throw new InvalidArgumentException('Temporary file could not be written.');
+            }
+
+            $offset += $written;
+        }
+    } finally {
+        fclose($handle);
+    }
+
+    $renamed = @rename($temporaryPath, $filePath);
+
+    if (!$renamed && $alreadyExists && $overwrite) {
+        @unlink($filePath);
+        $renamed = @rename($temporaryPath, $filePath);
+    }
+
+    if (!$renamed) {
+        @unlink($temporaryPath);
+        throw new InvalidArgumentException('File could not be written.');
+    }
+
+    return [
+        'path' => $relativePath,
+        'name' => basename($relativePath),
+        'encoding' => (string) $decoded['encoding'],
+        'bytesWritten' => strlen((string) $decoded['bytes']),
+        'overwritten' => $alreadyExists,
+    ];
+}
+
+function cdo_create_dir_payload(array $params): array
+{
+    if (!isset($params['path']) || !is_string($params['path'])) {
+        throw new InvalidArgumentException('create_dir path must be a string.');
+    }
+
+    $recursive = false;
+
+    if (isset($params['recursive'])) {
+        if (!is_bool($params['recursive'])) {
+            throw new InvalidArgumentException('create_dir recursive must be a boolean.');
+        }
+
+        $recursive = $params['recursive'];
+    }
+
+    $normalized = cdo_normalize_relative_path($params['path']);
+    cdo_validate_writable_relative_path($normalized, 'create_dir');
+
+    $directoryPath = (string) $normalized['filesystemPath'];
+    $relativePath = (string) $normalized['relativePath'];
+
+    if (file_exists($directoryPath)) {
+        $existingPath = cdo_resolve_existing_path($normalized);
+
+        if (!is_dir($existingPath)) {
+            throw new InvalidArgumentException('Path already exists and is not a directory.');
+        }
+
+        return [
+            'path' => $relativePath,
+            'name' => basename($relativePath),
+            'created' => false,
+            'alreadyExisted' => true,
+        ];
+    }
+
+    $parentPath = dirname($directoryPath);
+
+    if ($recursive) {
+        cdo_resolve_existing_ancestor_path($directoryPath);
+    } else {
+        $resolvedParentPath = cdo_resolve_existing_ancestor_path($parentPath);
+
+        if (str_replace('\\', '/', realpath($parentPath) ?: '') !== str_replace('\\', '/', $resolvedParentPath)) {
+            throw new InvalidArgumentException('Parent directory does not exist.');
+        }
+    }
+
+    if (!mkdir($directoryPath, 0775, $recursive) && !is_dir($directoryPath)) {
+        throw new InvalidArgumentException('Directory could not be created.');
+    }
+
+    cdo_resolve_existing_path($normalized);
+
+    return [
+        'path' => $relativePath,
+        'name' => basename($relativePath),
+        'created' => true,
+        'alreadyExisted' => false,
     ];
 }
 
@@ -1294,7 +1642,7 @@ function cdo_handle_request(array $message): void
                     'name' => CDO_APP_NAME,
                     'version' => CDO_APP_VERSION,
                 ],
-                'instructions' => 'Use request_auth first. After approval, call tools with Authorization: Bearer <token> or X-CDO-Bearer-Token: <token> to access list_dir.',
+                'instructions' => 'Use request_auth first. After approval, call tools with Authorization: Bearer <token> or X-CDO-Bearer-Token: <token> to access protected file tools.',
             ], 200, [
                 'MCP-Protocol-Version' => $negotiatedVersion,
             ]);
@@ -1415,6 +1763,74 @@ function cdo_handle_request(array $message): void
 
                 cdo_jsonrpc_result($id, cdo_tool_result(
                     'Read ' . $payload['bytesRead'] . ' bytes from ' . $payload['path'] . '.',
+                    $payload
+                ), 200, [
+                    'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                ]);
+                return;
+            }
+
+            if ($toolName === 'write_file') {
+                if (!$authContext['isAuthorized']) {
+                    $message = 'Authentication required. Use request_auth and then send Authorization: Bearer <token> or X-CDO-Bearer-Token: <token>.';
+
+                    if (($authContext['state']['state'] ?? null) === 'locked') {
+                        $message = (string) ($authContext['state']['message'] ?? 'Authentication is locked.');
+                    }
+
+                    cdo_jsonrpc_error($id, -32001, $message, 200, [
+                        'reason' => $authContext['reason'],
+                    ], [
+                        'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                    ]);
+                    return;
+                }
+
+                try {
+                    $payload = cdo_write_file_payload($arguments);
+                } catch (InvalidArgumentException $exception) {
+                    cdo_jsonrpc_error($id, -32602, $exception->getMessage(), 200, null, [
+                        'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                    ]);
+                    return;
+                }
+
+                cdo_jsonrpc_result($id, cdo_tool_result(
+                    'Wrote ' . $payload['bytesWritten'] . ' bytes to ' . $payload['path'] . '.',
+                    $payload
+                ), 200, [
+                    'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                ]);
+                return;
+            }
+
+            if ($toolName === 'create_dir') {
+                if (!$authContext['isAuthorized']) {
+                    $message = 'Authentication required. Use request_auth and then send Authorization: Bearer <token> or X-CDO-Bearer-Token: <token>.';
+
+                    if (($authContext['state']['state'] ?? null) === 'locked') {
+                        $message = (string) ($authContext['state']['message'] ?? 'Authentication is locked.');
+                    }
+
+                    cdo_jsonrpc_error($id, -32001, $message, 200, [
+                        'reason' => $authContext['reason'],
+                    ], [
+                        'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                    ]);
+                    return;
+                }
+
+                try {
+                    $payload = cdo_create_dir_payload($arguments);
+                } catch (InvalidArgumentException $exception) {
+                    cdo_jsonrpc_error($id, -32602, $exception->getMessage(), 200, null, [
+                        'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                    ]);
+                    return;
+                }
+
+                cdo_jsonrpc_result($id, cdo_tool_result(
+                    ($payload['created'] ? 'Created directory ' : 'Directory already exists: ') . $payload['path'] . '.',
                     $payload
                 ), 200, [
                     'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,

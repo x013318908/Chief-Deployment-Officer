@@ -176,6 +176,8 @@ $fixtureFile = Join-Path $fixtureDir 'alpha.txt'
 $fixtureDotFile = Join-Path $fixtureDir '.beta.txt'
 $nestedDir = Join-Path $fixtureDir 'nested'
 $nestedFile = Join-Path $nestedDir 'inside.txt'
+$writeDir = Join-Path $repoRoot 'public_html\smoke-write'
+$recursiveWriteDir = Join-Path $repoRoot 'public_html\smoke-recursive'
 
 Assert-True (Test-Path $entrypoint) "Missing entrypoint: $entrypoint"
 Assert-True (Test-Path $router) "Missing router: $router"
@@ -187,6 +189,8 @@ Remove-IfExists $renamedEntrypoint
 Remove-IfExists $visibleDotFile
 Remove-IfExists $internalControlFile
 Remove-IfExists $fixtureDir
+Remove-IfExists $writeDir
+Remove-IfExists $recursiveWriteDir
 
 Copy-Item -Path $entrypoint -Destination $renamedEntrypoint -Force
 Set-Content -Path $visibleDotFile -Value 'visible-root-dot'
@@ -328,6 +332,8 @@ try {
     Assert-True ($toolNames -contains 'request_auth') 'tools/list should expose request_auth before auth.'
     Assert-True (-not ($toolNames -contains 'list_dir')) 'tools/list should not expose list_dir before auth.'
     Assert-True (-not ($toolNames -contains 'read_file')) 'tools/list should not expose read_file before auth.'
+    Assert-True (-not ($toolNames -contains 'write_file')) 'tools/list should not expose write_file before auth.'
+    Assert-True (-not ($toolNames -contains 'create_dir')) 'tools/list should not expose create_dir before auth.'
 
     $unauthorizedListDir = Invoke-JsonRpcTool -Url $mcpUrl -Id 4 -ToolName 'list_dir'
     Assert-True ($unauthorizedListDir.StatusCode -eq 200) 'Unauthorized list_dir should still return JSON-RPC.'
@@ -340,6 +346,22 @@ try {
     Assert-True ($unauthorizedReadFile.StatusCode -eq 200) 'Unauthorized read_file should still return JSON-RPC.'
     $unauthorizedReadFileJson = $unauthorizedReadFile.Content | ConvertFrom-Json
     Assert-True ($unauthorizedReadFileJson.error.code -eq -32001) 'Unauthorized read_file should return an auth error.'
+
+    $unauthorizedWriteFile = Invoke-JsonRpcTool -Url $mcpUrl -Id 49 -ToolName 'write_file' -Arguments @{
+        path = 'smoke-write/new.txt'
+        content = 'blocked'
+        encoding = 'utf-8'
+    }
+    Assert-True ($unauthorizedWriteFile.StatusCode -eq 200) 'Unauthorized write_file should still return JSON-RPC.'
+    $unauthorizedWriteFileJson = $unauthorizedWriteFile.Content | ConvertFrom-Json
+    Assert-True ($unauthorizedWriteFileJson.error.code -eq -32001) 'Unauthorized write_file should return an auth error.'
+
+    $unauthorizedCreateDir = Invoke-JsonRpcTool -Url $mcpUrl -Id 50 -ToolName 'create_dir' -Arguments @{
+        path = 'smoke-write'
+    }
+    Assert-True ($unauthorizedCreateDir.StatusCode -eq 200) 'Unauthorized create_dir should still return JSON-RPC.'
+    $unauthorizedCreateDirJson = $unauthorizedCreateDir.Content | ConvertFrom-Json
+    Assert-True ($unauthorizedCreateDirJson.error.code -eq -32001) 'Unauthorized create_dir should return an auth error.'
 
     $serverStatusBeforeAuth = Invoke-JsonRpcTool -Url $mcpUrl -Id 40 -ToolName 'server_status'
     $serverStatusBeforeAuthJson = $serverStatusBeforeAuth.Content | ConvertFrom-Json
@@ -395,6 +417,8 @@ try {
     $toolNamesAuthorized = Get-ToolNames -Content $toolsListAuthorized.Content
     Assert-True ($toolNamesAuthorized -contains 'list_dir') 'Authorized tools/list should expose list_dir.'
     Assert-True ($toolNamesAuthorized -contains 'read_file') 'Authorized tools/list should expose read_file.'
+    Assert-True ($toolNamesAuthorized -contains 'write_file') 'Authorized tools/list should expose write_file.'
+    Assert-True ($toolNamesAuthorized -contains 'create_dir') 'Authorized tools/list should expose create_dir.'
 
     $serverStatusAfterAuth = Invoke-JsonRpcTool -Url $mcpUrl -Id 41 -ToolName 'server_status' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token'
     $serverStatusAfterAuthJson = $serverStatusAfterAuth.Content | ConvertFrom-Json
@@ -467,6 +491,141 @@ try {
     $readDirectoryJson = $readDirectory.Content | ConvertFrom-Json
     Assert-True ($readDirectoryJson.error.code -eq -32602) 'read_file should reject directories.'
 
+    $createWriteDir = Invoke-JsonRpcTool -Url $mcpUrl -Id 51 -ToolName 'create_dir' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-write'
+    }
+    $createWriteDirJson = $createWriteDir.Content | ConvertFrom-Json
+    Assert-True ($createWriteDirJson.result.structuredContent.created) 'create_dir should create a new directory.'
+    Assert-True (-not $createWriteDirJson.result.structuredContent.alreadyExisted) 'create_dir should report newly created directories.'
+
+    $createWriteDirAgain = Invoke-JsonRpcTool -Url $mcpUrl -Id 52 -ToolName 'create_dir' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-write'
+    }
+    $createWriteDirAgainJson = $createWriteDirAgain.Content | ConvertFrom-Json
+    Assert-True (-not $createWriteDirAgainJson.result.structuredContent.created) 'create_dir should not recreate existing directories.'
+    Assert-True ($createWriteDirAgainJson.result.structuredContent.alreadyExisted) 'create_dir should report existing directories.'
+
+    $writeNewFile = Invoke-JsonRpcTool -Url $mcpUrl -Id 53 -ToolName 'write_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-write/new.txt'
+        content = 'first'
+        encoding = 'utf-8'
+    }
+    $writeNewFileJson = $writeNewFile.Content | ConvertFrom-Json
+    Assert-True ($writeNewFileJson.result.structuredContent.path -eq 'smoke-write/new.txt') 'write_file should report the written path.'
+    Assert-True ($writeNewFileJson.result.structuredContent.bytesWritten -eq 5) 'write_file should report bytes written.'
+    Assert-True (-not $writeNewFileJson.result.structuredContent.overwritten) 'write_file should report new files as not overwritten.'
+
+    $readWrittenFile = Invoke-JsonRpcTool -Url $mcpUrl -Id 54 -ToolName 'read_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-write/new.txt'
+    }
+    $readWrittenFileJson = $readWrittenFile.Content | ConvertFrom-Json
+    Assert-True ($readWrittenFileJson.result.structuredContent.content -eq 'first') 'write_file output should be readable.'
+
+    $writeWithoutOverwrite = Invoke-JsonRpcTool -Url $mcpUrl -Id 55 -ToolName 'write_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-write/new.txt'
+        content = 'blocked'
+        encoding = 'utf-8'
+    }
+    $writeWithoutOverwriteJson = $writeWithoutOverwrite.Content | ConvertFrom-Json
+    Assert-True ($writeWithoutOverwriteJson.error.code -eq -32602) 'write_file should reject overwrites unless overwrite is true.'
+
+    $writeWithOverwrite = Invoke-JsonRpcTool -Url $mcpUrl -Id 56 -ToolName 'write_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-write/new.txt'
+        content = 'second'
+        encoding = 'utf-8'
+        overwrite = $true
+    }
+    $writeWithOverwriteJson = $writeWithOverwrite.Content | ConvertFrom-Json
+    Assert-True ($writeWithOverwriteJson.result.structuredContent.overwritten) 'write_file should report explicit overwrites.'
+
+    $readOverwrittenFile = Invoke-JsonRpcTool -Url $mcpUrl -Id 57 -ToolName 'read_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-write/new.txt'
+    }
+    $readOverwrittenFileJson = $readOverwrittenFile.Content | ConvertFrom-Json
+    Assert-True ($readOverwrittenFileJson.result.structuredContent.content -eq 'second') 'overwrite:true should update file content.'
+
+    $writeBase64File = Invoke-JsonRpcTool -Url $mcpUrl -Id 58 -ToolName 'write_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-write/blob.bin'
+        content = 'AAEC/w=='
+        encoding = 'base64'
+    }
+    $writeBase64FileJson = $writeBase64File.Content | ConvertFrom-Json
+    Assert-True ($writeBase64FileJson.result.structuredContent.bytesWritten -eq 4) 'write_file should decode base64 content before writing.'
+
+    $readBase64File = Invoke-JsonRpcTool -Url $mcpUrl -Id 59 -ToolName 'read_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-write/blob.bin'
+    }
+    $readBase64FileJson = $readBase64File.Content | ConvertFrom-Json
+    Assert-True ($readBase64FileJson.result.structuredContent.encoding -eq 'base64') 'read_file should return binary content as base64.'
+    Assert-True ($readBase64FileJson.result.structuredContent.content -eq 'AAEC/w==') 'base64 write/read should preserve bytes.'
+
+    $createNestedWithoutRecursive = Invoke-JsonRpcTool -Url $mcpUrl -Id 60 -ToolName 'create_dir' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-recursive/a/b'
+    }
+    $createNestedWithoutRecursiveJson = $createNestedWithoutRecursive.Content | ConvertFrom-Json
+    Assert-True ($createNestedWithoutRecursiveJson.error.code -eq -32602) 'create_dir should require recursive:true for missing parents.'
+
+    $createNestedWithRecursive = Invoke-JsonRpcTool -Url $mcpUrl -Id 61 -ToolName 'create_dir' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-recursive/a/b'
+        recursive = $true
+    }
+    $createNestedWithRecursiveJson = $createNestedWithRecursive.Content | ConvertFrom-Json
+    Assert-True ($createNestedWithRecursiveJson.result.structuredContent.created) 'create_dir should create nested directories when recursive is true.'
+
+    $writeMissingParent = Invoke-JsonRpcTool -Url $mcpUrl -Id 62 -ToolName 'write_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'missing-parent/new.txt'
+        content = 'blocked'
+        encoding = 'utf-8'
+    }
+    $writeMissingParentJson = $writeMissingParent.Content | ConvertFrom-Json
+    Assert-True ($writeMissingParentJson.error.code -eq -32602) 'write_file should reject missing parent directories.'
+
+    $createDirFileConflict = Invoke-JsonRpcTool -Url $mcpUrl -Id 63 -ToolName 'create_dir' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-write/new.txt'
+    }
+    $createDirFileConflictJson = $createDirFileConflict.Content | ConvertFrom-Json
+    Assert-True ($createDirFileConflictJson.error.code -eq -32602) 'create_dir should reject existing files.'
+
+    $writeParentTraversal = Invoke-JsonRpcTool -Url $mcpUrl -Id 64 -ToolName 'write_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = '../outside.txt'
+        content = 'blocked'
+        encoding = 'utf-8'
+    }
+    $writeParentTraversalJson = $writeParentTraversal.Content | ConvertFrom-Json
+    Assert-True ($writeParentTraversalJson.error.code -eq -32602) 'write_file should reject parent directory paths.'
+
+    $writeAbsolute = Invoke-JsonRpcTool -Url $mcpUrl -Id 65 -ToolName 'write_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = '/tmp/outside.txt'
+        content = 'blocked'
+        encoding = 'utf-8'
+    }
+    $writeAbsoluteJson = $writeAbsolute.Content | ConvertFrom-Json
+    Assert-True ($writeAbsoluteJson.error.code -eq -32602) 'write_file should reject absolute paths.'
+
+    $writeInternal = Invoke-JsonRpcTool -Url $mcpUrl -Id 66 -ToolName 'write_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = '.cdo_secret.txt'
+        content = 'blocked'
+        encoding = 'utf-8'
+        overwrite = $true
+    }
+    $writeInternalJson = $writeInternal.Content | ConvertFrom-Json
+    Assert-True ($writeInternalJson.error.code -eq -32602) 'write_file should reject internal control files.'
+
+    $writeEntrypoint = Invoke-JsonRpcTool -Url $mcpUrl -Id 67 -ToolName 'write_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'cdo.php'
+        content = 'blocked'
+        encoding = 'utf-8'
+        overwrite = $true
+    }
+    $writeEntrypointJson = $writeEntrypoint.Content | ConvertFrom-Json
+    Assert-True ($writeEntrypointJson.error.code -eq -32602) 'write_file should reject the current entrypoint file.'
+
+    $createInternal = Invoke-JsonRpcTool -Url $mcpUrl -Id 68 -ToolName 'create_dir' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = '.cdo_newdir'
+    }
+    $createInternalJson = $createInternal.Content | ConvertFrom-Json
+    Assert-True ($createInternalJson.error.code -eq -32602) 'create_dir should reject internal control file names.'
+
     $invalidParent = Invoke-JsonRpcTool -Url $mcpUrl -Id 11 -ToolName 'list_dir' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
         path = '..'
     }
@@ -526,5 +685,7 @@ try {
     Remove-IfExists $visibleDotFile
     Remove-IfExists $internalControlFile
     Remove-IfExists $fixtureDir
+    Remove-IfExists $writeDir
+    Remove-IfExists $recursiveWriteDir
     Remove-IfExists $tmpDir
 }
