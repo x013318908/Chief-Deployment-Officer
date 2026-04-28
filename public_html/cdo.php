@@ -1607,6 +1607,40 @@ function cdo_read_file_payload(array $params): array
     ];
 }
 
+function cdo_is_windows_environment(): bool
+{
+    return DIRECTORY_SEPARATOR === '\\';
+}
+
+function cdo_new_file_mode(): int
+{
+    return 0666 & ~umask();
+}
+
+function cdo_existing_file_mode(string $path): int
+{
+    $mode = @fileperms($path);
+
+    if (!is_int($mode)) {
+        throw new InvalidArgumentException('Existing file permissions could not be read.');
+    }
+
+    return $mode & 07777;
+}
+
+function cdo_apply_file_mode(string $path, int $mode): void
+{
+    if (@chmod($path, $mode)) {
+        return;
+    }
+
+    if (cdo_is_windows_environment()) {
+        return;
+    }
+
+    throw new InvalidArgumentException('Temporary file permissions could not be set.');
+}
+
 function cdo_write_file_payload(array $params): array
 {
     if (!isset($params['path']) || !is_string($params['path'])) {
@@ -1650,6 +1684,7 @@ function cdo_write_file_payload(array $params): array
         throw new InvalidArgumentException('write_file path exists but is not a file.');
     }
 
+    $targetFileMode = $alreadyExists ? cdo_existing_file_mode($filePath) : cdo_new_file_mode();
     $temporaryPath = tempnam($resolvedParentPath, '.cdo_write_');
 
     if (!is_string($temporaryPath)) {
@@ -1679,6 +1714,13 @@ function cdo_write_file_payload(array $params): array
         }
     } finally {
         fclose($handle);
+    }
+
+    try {
+        cdo_apply_file_mode($temporaryPath, $targetFileMode);
+    } catch (InvalidArgumentException $exception) {
+        @unlink($temporaryPath);
+        throw $exception;
     }
 
     $renamed = @rename($temporaryPath, $filePath);

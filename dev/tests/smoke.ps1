@@ -14,6 +14,59 @@ function Assert-True {
     }
 }
 
+function Test-PosixFileModes {
+    return [System.IO.Path]::DirectorySeparatorChar -eq '/'
+}
+
+function Get-PosixFileMode {
+    param(
+        [string] $Path
+    )
+
+    if (-not (Test-PosixFileModes)) {
+        return $null
+    }
+
+    $mode = & php -r 'clearstatcache(true, $argv[1]); $mode = fileperms($argv[1]); if ($mode === false) { exit(1); } echo sprintf("%04o", $mode & 07777);' $Path
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not read POSIX mode for $Path."
+    }
+
+    return [string] $mode
+}
+
+function Get-ExpectedNewFileMode {
+    if (-not (Test-PosixFileModes)) {
+        return $null
+    }
+
+    $mode = & php -r '$mode = 0666 & ~umask(); echo sprintf("%04o", $mode);'
+
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Could not read PHP umask.'
+    }
+
+    return [string] $mode
+}
+
+function Set-PosixFileMode {
+    param(
+        [string] $Path,
+        [string] $Mode
+    )
+
+    if (-not (Test-PosixFileModes)) {
+        return
+    }
+
+    & php -r 'if (!chmod($argv[1], octdec($argv[2]))) { exit(1); }' $Path $Mode
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not set POSIX mode $Mode for $Path."
+    }
+}
+
 function Get-FreePort {
     for ($port = 18080; $port -lt 18120; $port++) {
         try {
@@ -654,6 +707,13 @@ try {
     Assert-True ($writeNewFileJson.result.structuredContent.path -eq 'smoke-write/new.txt') 'write_file should report the written path.'
     Assert-True ($writeNewFileJson.result.structuredContent.bytesWritten -eq 5) 'write_file should report bytes written.'
     Assert-True (-not $writeNewFileJson.result.structuredContent.overwritten) 'write_file should report new files as not overwritten.'
+    $writtenFilePath = Join-Path $repoRoot 'public_html\smoke-write\new.txt'
+    $expectedNewFileMode = Get-ExpectedNewFileMode
+    $newFileMode = Get-PosixFileMode $writtenFilePath
+
+    if ($newFileMode -ne $null) {
+        Assert-True ($newFileMode -eq $expectedNewFileMode) 'write_file should create new files using the server umask.'
+    }
 
     $readWrittenFile = Invoke-JsonRpcTool -Url $mcpUrl -Id 54 -ToolName 'read_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
         path = 'smoke-write/new.txt'
@@ -668,6 +728,8 @@ try {
     }
     $writeWithoutOverwriteJson = $writeWithoutOverwrite.Content | ConvertFrom-Json
     Assert-True ($writeWithoutOverwriteJson.error.code -eq -32602) 'write_file should reject overwrites unless overwrite is true.'
+    Set-PosixFileMode $writtenFilePath '0640'
+    $modeBeforeOverwrite = Get-PosixFileMode $writtenFilePath
 
     $writeWithOverwrite = Invoke-JsonRpcTool -Url $mcpUrl -Id 56 -ToolName 'write_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
         path = 'smoke-write/new.txt'
@@ -677,6 +739,11 @@ try {
     }
     $writeWithOverwriteJson = $writeWithOverwrite.Content | ConvertFrom-Json
     Assert-True ($writeWithOverwriteJson.result.structuredContent.overwritten) 'write_file should report explicit overwrites.'
+    $modeAfterOverwrite = Get-PosixFileMode $writtenFilePath
+
+    if ($modeBeforeOverwrite -ne $null) {
+        Assert-True ($modeAfterOverwrite -eq $modeBeforeOverwrite) 'write_file should preserve existing POSIX mode when overwriting.'
+    }
 
     $readOverwrittenFile = Invoke-JsonRpcTool -Url $mcpUrl -Id 57 -ToolName 'read_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
         path = 'smoke-write/new.txt'
