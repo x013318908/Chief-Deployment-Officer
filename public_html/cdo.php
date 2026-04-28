@@ -406,6 +406,109 @@ function cdo_auth_state_message(string $authState): string
     }
 }
 
+function cdo_agent_guide_payload(string $endpointUrl): array
+{
+    return [
+        'audience' => 'AI agents using this Chief Deployment Officer endpoint.',
+        'endpoint' => $endpointUrl,
+        'transport' => 'Use Streamable HTTP with this exact endpoint URL. Do not switch to /sse, /cdo.php, a repository path, or a guessed location. SSE transport is not implemented.',
+        'oauth' => 'OAuth/OIDC discovery endpoints are not implemented. Do not start an OAuth flow; use request_auth and bearer headers instead.',
+        'firstSteps' => [
+            'Call tools/list against this endpoint.',
+            'Do not inspect a local repository first unless the user explicitly asks.',
+            'Call tools/call server_status and read authState, authorized, authReason, agentName, contextHint, approvedAt, and lastUsedAt.',
+            'If not approved, call tools/call request_auth with agentName and contextHint.',
+            'Give approvalUrl to the user, ask them to open it and approve, then wait until they report approval is complete.',
+            'Keep the returned bearer token private in the agent session. Do not ask the user to paste it back.',
+            'After approval, send X-CDO-Bearer-Token: <bearerToken> on future MCP requests. Authorization: Bearer <bearerToken> is also accepted.',
+            'Call server_status again and confirm authorized=true before using protected file tools.',
+        ],
+        'contextHint' => 'Use contextHint as a short clue that helps the user find the approving conversation later, such as "Codex desktop / project or deploy thread / YYYY-MM-DD". Do not include secrets or tokens.',
+        'inspector' => 'In MCP Inspector, choose Streamable HTTP and put X-CDO-Bearer-Token: <bearerToken> in the Authentication custom headers. Do not use the OAuth flow.',
+        'multiAgent' => 'One file equals one agent authorization. For multiple agents, copy this PHP file into separate subdirectories such as agent-a/cdo.php and agent-b/cdo.php. Each copy has its own URL, auth state, and approval flow.',
+        'protectedTools' => [
+            'list_dir',
+            'read_file',
+            'write_file',
+            'create_dir',
+            'delete_file',
+            'delete_dir',
+            'rename_path',
+        ],
+        'operationRules' => [
+            'The root is the directory that contains this endpoint file.',
+            'Use relative paths only. Absolute paths, parent directory references, .cdo_* internal control files, and the current endpoint file itself are rejected.',
+            'Before write/delete/rename, explain the target path to the user and get explicit confirmation.',
+            'Use list_dir and read_file to verify targets before destructive or overwriting operations.',
+            'write_file requires overwrite:true for existing files, preserves existing permissions on overwrite, and uses the server umask for new files.',
+            'delete_file and delete_dir require confirm:true. delete_dir only removes empty directories; recursive delete is not implemented.',
+            'rename_path requires confirm:true and never replaces an existing destination. Rename overwrite/replace is not implemented.',
+        ],
+        'timeoutHandling' => [
+            'If a write/delete/rename tool call times out, Do not retry the same operation immediately.',
+            'First call server_status, then use list_dir and read_file to verify the target state.',
+            'If the change is already reflected, treat it as success. If it is not reflected, ask the user before running the operation again.',
+        ],
+        'reset' => 'To reset approval, delete .cdo_auth.json next to this endpoint. Do not distribute .cdo_auth.json or .cdo_debug.log.',
+    ];
+}
+
+function cdo_agent_guide_text(string $endpointUrl): string
+{
+    $guide = cdo_agent_guide_payload($endpointUrl);
+    $firstSteps = implode("\n", array_map(static function (string $item, int $index): string {
+        return ($index + 1) . '. ' . $item;
+    }, $guide['firstSteps'], array_keys($guide['firstSteps'])));
+    $operationRules = implode("\n", array_map(static function (string $item): string {
+        return '- ' . $item;
+    }, $guide['operationRules']));
+    $timeoutHandling = implode("\n", array_map(static function (string $item): string {
+        return '- ' . $item;
+    }, $guide['timeoutHandling']));
+    $protectedTools = implode(', ', $guide['protectedTools']);
+
+    return <<<TEXT
+Chief Deployment Officer
+
+This URL is a Streamable HTTP MCP endpoint for AI agents.
+
+Chief Deployment Officer provides controlled file operations on this server after explicit user approval.
+
+Use this exact URL as the MCP endpoint:
+{$endpointUrl}
+
+Suggested prompt:
+I want to use this as an MCP endpoint:
+{$endpointUrl}
+
+Transport and authentication:
+- {$guide['transport']}
+- {$guide['oauth']}
+- {$guide['inspector']}
+
+AI agent instructions for this endpoint:
+{$firstSteps}
+
+contextHint:
+{$guide['contextHint']}
+
+Multiple agents:
+{$guide['multiAgent']}
+
+Protected tools after approval:
+{$protectedTools}
+
+Operation rules:
+{$operationRules}
+
+Timeout handling:
+{$timeoutHandling}
+
+Reset and distribution:
+{$guide['reset']}
+TEXT;
+}
+
 function cdo_render_page(string $title, string $bodyHtml, int $statusCode = 200): void
 {
     http_response_code($statusCode);
@@ -628,39 +731,7 @@ function cdo_render_default_page(): void
     $lastUsedAt = cdo_html_text(cdo_public_display_time($state['lastUsedAt'] ?? null));
     $copyPromptText = "これを使いたい `{$endpointUrl}`";
     $copyPrompt = htmlspecialchars($copyPromptText, ENT_QUOTES, 'UTF-8');
-    $suggestedPromptText = "I want to use this as an MCP endpoint:\n{$endpointUrl}";
-    $aiGuideText = <<<TEXT
-Chief Deployment Officer
-
-This URL is a Streamable HTTP MCP endpoint for AI agents.
-
-Chief Deployment Officer provides controlled file operations on this server after explicit user approval.
-
-Use this exact URL as the MCP endpoint:
-{$endpointUrl}
-
-Protected tools after approval:
-list_dir, read_file, write_file, create_dir, delete_file, delete_dir, rename_path
-
-Suggested prompt:
-{$suggestedPromptText}
-
-AI agent instructions for this endpoint:
-1. If the user gave you this URL, use this exact URL as the Streamable HTTP MCP endpoint.
-2. Do not replace this URL with /cdo.php, a repository path, or another guessed location.
-3. Do not inspect a local repository first unless the user explicitly asks; start by calling tools/list against this endpoint.
-4. Call tools/list, then call tools/call server_status to read authState, authorized, agentName, contextHint, approvedAt, and lastUsedAt.
-5. If not approved, call tools/call request_auth with arguments like {"agentName":"Codex","contextHint":"Codex desktop / project or deploy thread / YYYY-MM-DD"}.
-6. Give the approvalUrl to the user, ask them to open it and approve, then wait until they tell you approval is complete.
-7. Keep the returned bearer token private in the agent session. Do not ask the user to paste it back.
-8. After approval, send X-CDO-Bearer-Token: <bearerToken> on future MCP requests.
-9. Call server_status again to confirm authorized=true, then use protected file tools.
-10. Before write/delete/rename, explain the target path to the user and get explicit confirmation.
-11. If a write/delete/rename tool call timeout happens, Do not retry the same operation immediately.
-12. First call server_status, then use list_dir and read_file to verify the target state.
-13. If the change is already reflected, treat it as success. If not reflected, ask the user before running the operation again.
-TEXT;
-    $aiGuide = htmlspecialchars($aiGuideText, ENT_QUOTES, 'UTF-8');
+    $aiGuide = htmlspecialchars(cdo_agent_guide_text($endpointUrl), ENT_QUOTES, 'UTF-8');
 
     $bodyHtml = <<<HTML
 <h1>Chief Deployment Officer</h1>
@@ -1046,7 +1117,7 @@ function cdo_get_public_tools(): array
         [
             'name' => 'server_status',
             'title' => 'Server Status',
-            'description' => 'Return non-sensitive server metadata for connectivity checks.',
+            'description' => 'Return non-sensitive server metadata, auth status, and AI-agent usage guidance for connectivity checks.',
             'inputSchema' => [
                 'type' => 'object',
                 'properties' => new stdClass(),
@@ -1063,7 +1134,51 @@ function cdo_get_public_tools(): array
                         'items' => ['type' => 'string'],
                     ],
                     'entrypoint' => ['type' => 'string'],
+                    'endpoint' => ['type' => 'string'],
                     'ready' => ['type' => 'boolean'],
+                    'agentGuide' => [
+                        'type' => 'object',
+                        'properties' => [
+                            'audience' => ['type' => 'string'],
+                            'endpoint' => ['type' => 'string'],
+                            'transport' => ['type' => 'string'],
+                            'oauth' => ['type' => 'string'],
+                            'firstSteps' => [
+                                'type' => 'array',
+                                'items' => ['type' => 'string'],
+                            ],
+                            'contextHint' => ['type' => 'string'],
+                            'inspector' => ['type' => 'string'],
+                            'multiAgent' => ['type' => 'string'],
+                            'protectedTools' => [
+                                'type' => 'array',
+                                'items' => ['type' => 'string'],
+                            ],
+                            'operationRules' => [
+                                'type' => 'array',
+                                'items' => ['type' => 'string'],
+                            ],
+                            'timeoutHandling' => [
+                                'type' => 'array',
+                                'items' => ['type' => 'string'],
+                            ],
+                            'reset' => ['type' => 'string'],
+                        ],
+                        'required' => [
+                            'audience',
+                            'endpoint',
+                            'transport',
+                            'oauth',
+                            'firstSteps',
+                            'contextHint',
+                            'inspector',
+                            'multiAgent',
+                            'protectedTools',
+                            'operationRules',
+                            'timeoutHandling',
+                            'reset',
+                        ],
+                    ],
                     'authConfigured' => ['type' => 'boolean'],
                     'authState' => ['type' => ['string', 'null']],
                     'authorized' => ['type' => 'boolean'],
@@ -1086,7 +1201,9 @@ function cdo_get_public_tools(): array
                     'protocolVersion',
                     'supportedProtocolVersions',
                     'entrypoint',
+                    'endpoint',
                     'ready',
+                    'agentGuide',
                     'authConfigured',
                     'authState',
                     'authorized',
@@ -1375,13 +1492,17 @@ function cdo_get_tools(array $authContext): array
 
 function cdo_server_status_payload(array $authContext): array
 {
+    $endpointUrl = cdo_build_public_url(cdo_get_entrypoint_path());
+
     return array_merge([
         'appName' => CDO_APP_NAME,
         'appVersion' => CDO_APP_VERSION,
         'protocolVersion' => CDO_PROTOCOL_VERSION,
         'supportedProtocolVersions' => CDO_SUPPORTED_PROTOCOL_VERSIONS,
         'entrypoint' => cdo_get_entrypoint_path(),
+        'endpoint' => $endpointUrl,
         'ready' => true,
+        'agentGuide' => cdo_agent_guide_payload($endpointUrl),
     ], cdo_auth_public_payload($authContext));
 }
 
