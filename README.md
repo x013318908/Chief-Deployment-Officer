@@ -49,7 +49,16 @@ MCP endpoint は次のどちらでも使えます。
 
 `public_html/cdo.php` は任意の `.php` ファイル名に変更しても動く前提です。公開環境では `cdo` 部分を推測されにくい名前へ変更し、MCP endpoint URL も変更後のファイル名で指定してください。
 
-この認証フローは「ユーザーが承認した1エージェントだけに Bearer token を渡す」ための最小防御です。ファイル名変更は機械的な探索を減らす運用上の補助であり、HTTPS、サーバー側のアクセス制限、不要になった `public_html/.cdo_auth.json` の削除と組み合わせて使ってください。
+この認証フローは「ユーザーが承認した1エージェントだけに Bearer token を渡す」ための最小防御です。ファイル名変更は機械的な探索を減らす運用上の補助であり、単独の防御策として扱わないでください。
+
+## 本番配置前チェック
+
+- HTTPS環境で使ってください。HTTPでは bearer token と承認URLが盗聴されるリスクがあります
+- `cdo.php` は推測されにくいPHPファイル名に変更し、MCP endpoint URL も変更後のファイル名で指定してください
+- サーバー側でIP制限、Basic認証、管理画面配下配置などの追加アクセス制限を検討してください
+- `write_file`, `delete_file`, `delete_dir`, `rename_path` を使う前に、対象ディレクトリのバックアップを取ってください
+- 不要になった認証は `public_html/.cdo_auth.json` を削除してリセットしてください
+- `public_html/.cdo_auth.json` と `public_html/.cdo_debug.log` は公開配布物・共有物に含めないでください
 
 ## 複数エージェントで使う場合
 
@@ -82,6 +91,14 @@ MCP Inspector では `Authentication` パネルの custom headers に `X-CDO-Bea
 Inspector で保護ツールが見えない場合は、まず `server_status` を呼んでこの 4 項目を見てください。そのうえで `public_html/.cdo_debug.log` を開くと、`tools/list` と `auth_context` の判定履歴が確認できます。
 
 開発やテストで状態ファイルを分離したい場合は、`CDO_AUTH_STATE_PATH` と `CDO_DEBUG_LOG_PATH` で保存先を上書きできます。
+
+## 危険操作の運用ルール
+
+- `write_file`, `delete_file`, `delete_dir`, `rename_path` は承認済みエージェントだけに使わせてください
+- 削除・リネーム前には `list_dir` / `read_file` で対象パスと内容を確認してください
+- `confirm: true` は、ユーザーが対象と操作内容を確認した後だけ付けてください
+- `delete_dir` は空ディレクトリのみ対応します。再帰削除は実装していません
+- `rename_path` は宛先が既に存在する場合は拒否します。リネーム時の上書き・置換は実装していません
 
 ## list_dir
 
