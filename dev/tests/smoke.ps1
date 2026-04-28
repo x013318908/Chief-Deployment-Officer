@@ -169,6 +169,8 @@ $tmpDir = Join-Path $repoRoot 'dev\tests\tmp'
 $authFile = Join-Path $tmpDir 'smoke-auth.json'
 $debugLog = Join-Path $tmpDir 'smoke-debug.log'
 $renamedEntrypoint = Join-Path $repoRoot 'public_html\chief-smoke.php'
+$subdirEntrypointDir = Join-Path $repoRoot 'public_html\agent-smoke'
+$subdirEntrypoint = Join-Path $subdirEntrypointDir 'cdo.php'
 $visibleDotFile = Join-Path $repoRoot 'public_html\.smoke-visible.txt'
 $internalControlFile = Join-Path $repoRoot 'public_html\.cdo_secret.txt'
 $fixtureDir = Join-Path $repoRoot 'public_html\smoke-fixture'
@@ -198,6 +200,7 @@ New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
 Remove-IfExists $authFile
 Remove-IfExists $debugLog
 Remove-IfExists $renamedEntrypoint
+Remove-IfExists $subdirEntrypointDir
 Remove-IfExists $visibleDotFile
 Remove-IfExists $internalControlFile
 Remove-IfExists $fixtureDir
@@ -207,6 +210,8 @@ Remove-IfExists $deleteDir
 Remove-IfExists $renameDir
 
 Copy-Item -Path $entrypoint -Destination $renamedEntrypoint -Force
+New-Item -ItemType Directory -Path $subdirEntrypointDir | Out-Null
+Copy-Item -Path $entrypoint -Destination $subdirEntrypoint -Force
 Set-Content -Path $visibleDotFile -Value 'visible-root-dot'
 Set-Content -Path $internalControlFile -Value 'internal-secret'
 New-Item -ItemType Directory -Path $fixtureDir | Out-Null
@@ -240,6 +245,7 @@ $rootUrl = "http://127.0.0.1:$port/"
 $mcpUrl = "http://127.0.0.1:$port/mcp"
 $fileUrl = "http://127.0.0.1:$port/cdo.php"
 $renamedFileUrl = "http://127.0.0.1:$port/chief-smoke.php"
+$subdirFileUrl = "http://127.0.0.1:$port/agent-smoke/cdo.php"
 
 try {
     Start-Sleep -Seconds 3
@@ -253,6 +259,26 @@ try {
     Assert-True ($html.Content.Contains('request_auth')) 'HTML response should mention request_auth.'
     Assert-True ($html.Content.Contains('list_dir')) 'HTML response should mention list_dir.'
     Assert-True ($html.Content.Contains('delete_file')) 'HTML response should mention delete_file.'
+    Assert-True ($html.Content.Contains('AI agent instructions')) 'HTML response should include AI-agent instructions.'
+    $userGuidanceIndex = $html.Content.IndexOf('User guidance')
+    $aiGuidanceIndex = $html.Content.IndexOf('AI agent guidance')
+    Assert-True ($userGuidanceIndex -ge 0) 'HTML response should include a user-facing section.'
+    Assert-True ($aiGuidanceIndex -gt $userGuidanceIndex) 'HTML response should place AI-agent guidance after the user-facing section.'
+    Assert-True ($html.Content.Contains('MCP endpoint')) 'HTML response should include the MCP endpoint.'
+    Assert-True ($html.Content.Contains('tools/list')) 'HTML response should tell agents to call tools/list first.'
+    Assert-True ($html.Content.Contains('server_status')) 'HTML response should tell agents to call server_status.'
+    Assert-True ($html.Content.Contains('contextHint')) 'HTML response should explain contextHint usage.'
+    Assert-True ($html.Content.Contains('this exact URL')) 'HTML response should tell agents to keep the provided endpoint URL.'
+    Assert-True ($html.Content.Contains('Do not inspect a local repository first')) 'HTML response should prevent unnecessary local repo inspection.'
+    Assert-True ($html.Content.Contains('approvalUrl')) 'HTML response should tell agents to pass the approval URL to the user.'
+    Assert-True ($html.Content.Contains('Do not ask the user to paste it back')) 'HTML response should tell agents not to ask users to paste tokens.'
+    Assert-True ($html.Content.Contains('X-CDO-Bearer-Token')) 'HTML response should mention the preferred bearer header.'
+    Assert-True ($html.Content.Contains('not_configured')) 'HTML response should report missing auth state before auth.'
+    Assert-True (-not $html.Content.Contains('tokenHashPrefix')) 'HTML response should not expose token hash prefixes.'
+    Assert-True (-not $html.Content.Contains('storedTokenHashPrefix')) 'HTML response should not expose stored token hash prefixes.'
+    Assert-True (-not $html.Content.Contains('approvalSecret')) 'HTML response should not expose approval secrets.'
+    Assert-True (-not $html.Content.Contains('pendingBearerToken')) 'HTML response should not expose pending bearer tokens.'
+    Assert-True (-not $html.Content.Contains('bearerTokenHash')) 'HTML response should not expose bearer token hashes.'
 
     $directFile = Invoke-SmokeRequest -Url $fileUrl -Method 'GET'
     Assert-True ($directFile.StatusCode -eq 200) 'GET /cdo.php should return 200.'
@@ -269,6 +295,21 @@ try {
     $renamedRequestAuthJson = $renamedRequestAuth.Content | ConvertFrom-Json
     $renamedApprovalUrl = [string] $renamedRequestAuthJson.result.structuredContent.approvalUrl
     Assert-True ($renamedApprovalUrl.Contains('/chief-smoke.php?cdo_approve=')) 'Renamed entrypoint should build approval URLs with the current filename.'
+    Remove-IfExists $authFile
+    Remove-IfExists $debugLog
+
+    $subdirHtml = Invoke-SmokeRequest -Url $subdirFileUrl -Method 'GET'
+    Assert-True ($subdirHtml.StatusCode -eq 200) 'Subdirectory entrypoint should return 200.'
+    Assert-True ($subdirHtml.Content.Contains('/agent-smoke/cdo.php')) 'Subdirectory entrypoint page should report its full path.'
+    Assert-True ($subdirHtml.Content.Contains($subdirFileUrl)) 'Subdirectory entrypoint page should report its full endpoint URL.'
+
+    $subdirRequestAuth = Invoke-JsonRpcTool -Url $subdirFileUrl -Id 17 -ToolName 'request_auth' -Arguments @{
+        agentName = 'subdir-smoke-agent'
+    }
+    Assert-True ($subdirRequestAuth.StatusCode -eq 200) 'Subdirectory entrypoint request_auth should return 200.'
+    $subdirRequestAuthJson = $subdirRequestAuth.Content | ConvertFrom-Json
+    $subdirApprovalUrl = [string] $subdirRequestAuthJson.result.structuredContent.approvalUrl
+    Assert-True ($subdirApprovalUrl.Contains('/agent-smoke/cdo.php?cdo_approve=')) 'Subdirectory entrypoint should build approval URLs with the subdirectory path.'
     Remove-IfExists $authFile
     Remove-IfExists $debugLog
 
@@ -422,10 +463,13 @@ try {
     Assert-True (-not $serverStatusBeforeAuthData.authorized) 'server_status should report unauthorized before auth.'
     Assert-True (-not $serverStatusBeforeAuthData.authorizationHeaderPresent) 'server_status should report missing Authorization before auth.'
     Assert-True (-not $serverStatusBeforeAuthData.authConfigured) 'server_status should report auth not configured before request_auth.'
+    Assert-True ($serverStatusBeforeAuthData.authState -eq 'not_configured') 'server_status should report not_configured before request_auth.'
     Assert-True ($serverStatusBeforeAuthData.authReason -eq 'missing_state') 'server_status should explain that auth state is missing before request_auth.'
 
+    $contextHint = 'Codex desktop / smoke auth thread / 2026-04-28'
     $requestAuth = Invoke-JsonRpcTool -Url $mcpUrl -Id 5 -ToolName 'request_auth' -Arguments @{
         agentName = 'smoke-agent'
+        contextHint = $contextHint
     }
     Assert-True ($requestAuth.StatusCode -eq 200) 'request_auth should return 200.'
     $requestAuthJson = $requestAuth.Content | ConvertFrom-Json
@@ -434,8 +478,11 @@ try {
     Assert-True (-not [string]::IsNullOrWhiteSpace($requestAuthData.approvalUrl)) 'request_auth should return an approval URL.'
     Assert-True (-not [string]::IsNullOrWhiteSpace($requestAuthData.bearerToken)) 'request_auth should return a bearer token.'
     Assert-True ($requestAuthData.preferredHeaderName -eq 'X-CDO-Bearer-Token') 'request_auth should expose the preferred Inspector header name.'
+    Assert-True ($requestAuthData.agentName -eq 'smoke-agent') 'request_auth should echo the safe agent name metadata.'
+    Assert-True ($requestAuthData.contextHint -eq $contextHint) 'request_auth should echo the safe context hint metadata.'
     $approvalUrl = [string] $requestAuthData.approvalUrl
     $bearerToken = [string] $requestAuthData.bearerToken
+    $approvalSecret = ($approvalUrl -split 'cdo_approve=')[1]
 
     $requestAuthAgain = Invoke-JsonRpcTool -Url $mcpUrl -Id 6 -ToolName 'request_auth'
     $requestAuthAgainJson = $requestAuthAgain.Content | ConvertFrom-Json
@@ -446,12 +493,36 @@ try {
     $approvalGet = Invoke-SmokeRequest -Url $approvalUrl -Method 'GET'
     Assert-True ($approvalGet.StatusCode -eq 200) 'Approval GET should return 200.'
     Assert-True ($approvalGet.Content.Contains('MCP Approval')) 'Approval GET should render the approval page.'
+    Assert-True ($approvalGet.Content.Contains('smoke-agent')) 'Approval GET should show the requesting agent name.'
+    Assert-True ($approvalGet.Content.Contains($contextHint)) 'Approval GET should show the context hint.'
+    Assert-True (-not $approvalGet.Content.Contains($bearerToken)) 'Approval GET should not expose the bearer token.'
+    Assert-True (-not $approvalGet.Content.Contains($approvalSecret)) 'Approval GET should not expose the approval secret in the HTML body.'
+    Assert-True (-not $approvalGet.Content.Contains('tokenHashPrefix')) 'Approval GET should not expose token hash prefixes.'
 
     $approvalPost = Invoke-SmokeRequest -Url $approvalUrl -Method 'POST' -Headers @{
         'Content-Type' = 'application/x-www-form-urlencoded'
     } -Body 'approve=yes'
     Assert-True ($approvalPost.StatusCode -eq 200) 'Approval POST should return 200.'
     Assert-True ($approvalPost.Content.Contains('Approval Complete')) 'Approval POST should render the success page.'
+    Assert-True ($approvalPost.Content.Contains('smoke-agent')) 'Approval success should show the approved agent name.'
+    Assert-True ($approvalPost.Content.Contains($contextHint)) 'Approval success should show the context hint.'
+    Assert-True ($approvalPost.Content.Contains('approvedAt')) 'Approval success should show the approval timestamp.'
+    Assert-True (-not $approvalPost.Content.Contains($bearerToken)) 'Approval success should not expose the bearer token.'
+    Assert-True (-not $approvalPost.Content.Contains($approvalSecret)) 'Approval success should not expose the approval secret.'
+
+    $htmlAfterApproval = Invoke-SmokeRequest -Url $rootUrl -Method 'GET'
+    Assert-True ($htmlAfterApproval.StatusCode -eq 200) 'GET / after approval should return 200.'
+    Assert-True ($htmlAfterApproval.Content.Contains('approved')) 'HTML response should report approved auth state after approval.'
+    Assert-True ($htmlAfterApproval.Content.Contains('smoke-agent')) 'HTML response should show the approved agent name.'
+    Assert-True ($htmlAfterApproval.Content.Contains($contextHint)) 'HTML response should show the context hint after approval.'
+    Assert-True ($htmlAfterApproval.Content.Contains('approvedAt')) 'HTML response should show approvedAt after approval.'
+    Assert-True ($htmlAfterApproval.Content.Contains('lastUsedAt')) 'HTML response should show lastUsedAt after approval.'
+    Assert-True (-not $htmlAfterApproval.Content.Contains($bearerToken)) 'HTML response should not expose the bearer token after approval.'
+    Assert-True (-not $htmlAfterApproval.Content.Contains($approvalSecret)) 'HTML response should not expose the approval secret after approval.'
+    Assert-True (-not $htmlAfterApproval.Content.Contains('tokenHashPrefix')) 'HTML response should not expose token hash prefixes after approval.'
+    Assert-True (-not $htmlAfterApproval.Content.Contains('storedTokenHashPrefix')) 'HTML response should not expose stored token hash prefixes after approval.'
+    Assert-True (-not $htmlAfterApproval.Content.Contains('pendingBearerToken')) 'HTML response should not expose pending bearer token names after approval.'
+    Assert-True (-not $htmlAfterApproval.Content.Contains('bearerTokenHash')) 'HTML response should not expose bearer token hash names after approval.'
 
     $serverStatusMissingHeader = Invoke-JsonRpcTool -Url $mcpUrl -Id 42 -ToolName 'server_status'
     $serverStatusMissingHeaderJson = $serverStatusMissingHeader.Content | ConvertFrom-Json
@@ -460,6 +531,17 @@ try {
     Assert-True ($serverStatusMissingHeaderData.authState -eq 'approved') 'server_status should expose the approved auth state after approval.'
     Assert-True (-not $serverStatusMissingHeaderData.authorized) 'server_status should still report unauthorized without the header.'
     Assert-True ($serverStatusMissingHeaderData.authReason -eq 'missing_token') 'server_status should explain that the bearer token was not sent.'
+    Assert-True ($serverStatusMissingHeaderData.agentName -eq 'smoke-agent') 'server_status should expose safe agent name metadata.'
+    Assert-True ($serverStatusMissingHeaderData.contextHint -eq $contextHint) 'server_status should expose safe context hint metadata.'
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string] $serverStatusMissingHeaderData.approvedAt)) 'server_status should expose approvedAt.'
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string] $serverStatusMissingHeaderData.lastUsedAt)) 'server_status should expose lastUsedAt.'
+    $serverStatusMissingHeaderProps = @($serverStatusMissingHeaderData.PSObject.Properties | ForEach-Object { [string] $_.Name })
+    Assert-True (-not ($serverStatusMissingHeaderProps -contains 'tokenHashPrefix')) 'server_status should not expose token hash prefixes.'
+    Assert-True (-not ($serverStatusMissingHeaderProps -contains 'storedTokenHashPrefix')) 'server_status should not expose stored token hash prefixes.'
+    Assert-True (-not $serverStatusMissingHeader.Content.Contains($bearerToken)) 'server_status should not expose the bearer token.'
+    Assert-True (-not $serverStatusMissingHeader.Content.Contains($approvalSecret)) 'server_status should not expose the approval secret.'
+    Assert-True (-not $serverStatusMissingHeader.Content.Contains('pendingBearerToken')) 'server_status should not expose pending bearer token names.'
+    Assert-True (-not $serverStatusMissingHeader.Content.Contains('bearerTokenHash')) 'server_status should not expose bearer token hash names.'
 
     $toolsListAuthorized = Invoke-SmokeRequest -Url $mcpUrl -Method 'POST' -Headers @{
         Accept = 'application/json, text/event-stream'
@@ -483,6 +565,8 @@ try {
     Assert-True ($serverStatusAfterAuthData.inspectorBearerHeaderPresent) 'server_status should report X-CDO-Bearer-Token header presence after auth.'
     Assert-True ($serverStatusAfterAuthData.bearerHeaderSource -eq 'x-cdo-bearer-token') 'server_status should report the inspector header source.'
     Assert-True ($serverStatusAfterAuthData.authReason -eq 'authorized') 'server_status should explain why auth succeeded.'
+    Assert-True ($serverStatusAfterAuthData.agentName -eq 'smoke-agent') 'Authenticated server_status should expose safe agent name metadata.'
+    Assert-True ($serverStatusAfterAuthData.contextHint -eq $contextHint) 'Authenticated server_status should expose safe context hint metadata.'
 
     $serverStatusAuthorizationHeader = Invoke-JsonRpcTool -Url $mcpUrl -Id 43 -ToolName 'server_status' -BearerToken $bearerToken -BearerHeaderName 'Authorization'
     $serverStatusAuthorizationHeaderJson = $serverStatusAuthorizationHeader.Content | ConvertFrom-Json
@@ -926,6 +1010,7 @@ try {
     Remove-IfExists $authFile
     Remove-IfExists $debugLog
     Remove-IfExists $renamedEntrypoint
+    Remove-IfExists $subdirEntrypointDir
     Remove-IfExists $visibleDotFile
     Remove-IfExists $internalControlFile
     Remove-IfExists $fixtureDir

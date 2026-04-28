@@ -265,7 +265,37 @@ function cdo_get_request_scheme(): string
 
 function cdo_get_entrypoint_path(): string
 {
-    return '/' . basename((string) ($_SERVER['SCRIPT_NAME'] ?? 'cdo.php'));
+    $path = (string) parse_url((string) ($_SERVER['SCRIPT_NAME'] ?? ''), PHP_URL_PATH);
+
+    if ($path === '') {
+        $path = (string) parse_url((string) ($_SERVER['PHP_SELF'] ?? ''), PHP_URL_PATH);
+    }
+
+    if ($path === '' || $path === '/') {
+        return '/cdo.php';
+    }
+
+    $path = str_replace('\\', '/', $path);
+
+    if ($path[0] !== '/') {
+        $path = '/' . $path;
+    }
+
+    $segments = [];
+
+    foreach (explode('/', $path) as $segment) {
+        if ($segment === '' || $segment === '.' || $segment === '..') {
+            continue;
+        }
+
+        $segments[] = $segment;
+    }
+
+    if ($segments === []) {
+        return '/cdo.php';
+    }
+
+    return '/' . implode('/', $segments);
 }
 
 function cdo_request_path(): string
@@ -301,6 +331,47 @@ function cdo_build_approval_url(string $secret): string
         CDO_APPROVAL_QUERY_KEY,
         rawurlencode($secret)
     );
+}
+
+function cdo_build_public_url(string $path): string
+{
+    if ($path === '' || $path[0] !== '/') {
+        $path = '/' . $path;
+    }
+
+    return sprintf(
+        '%s://%s%s',
+        cdo_get_request_scheme(),
+        cdo_request_host(),
+        $path
+    );
+}
+
+function cdo_public_text($value): ?string
+{
+    if (!is_string($value)) {
+        return null;
+    }
+
+    $value = trim($value);
+
+    return $value === '' ? null : $value;
+}
+
+function cdo_public_time($value): ?string
+{
+    $timestamp = is_int($value) ? $value : (is_numeric($value) ? (int) $value : 0);
+
+    if ($timestamp <= 0) {
+        return null;
+    }
+
+    return gmdate('c', $timestamp);
+}
+
+function cdo_html_text(?string $value, string $fallback = 'not set'): string
+{
+    return htmlspecialchars($value ?? $fallback, ENT_QUOTES, 'UTF-8');
 }
 
 function cdo_render_page(string $title, string $bodyHtml, int $statusCode = 200): void
@@ -344,6 +415,19 @@ function cdo_render_page(string $title, string $bodyHtml, int $statusCode = 200)
       font-family: Consolas, monospace;
       font-size: 0.95em;
     }
+    pre {
+      overflow-x: auto;
+      border-radius: 12px;
+      padding: 14px;
+      background: rgba(30, 29, 26, 0.06);
+      white-space: pre-wrap;
+    }
+    h2 {
+      margin: 28px 0 12px;
+    }
+    h3 {
+      margin: 20px 0 10px;
+    }
     p, li {
       margin: 0 0 12px;
     }
@@ -376,6 +460,9 @@ function cdo_render_page(string $title, string $bodyHtml, int $statusCode = 200)
         background: #f4efe7;
         color: #161512;
       }
+      pre {
+        background: rgba(244, 239, 231, 0.08);
+      }
     }
   </style>
 </head>
@@ -392,21 +479,84 @@ HTML;
 
 function cdo_render_default_page(): void
 {
-    $entrypoint = htmlspecialchars(cdo_get_entrypoint_path(), ENT_QUOTES, 'UTF-8');
+    $authContext = cdo_auth_context();
+    $auth = cdo_auth_public_payload($authContext);
+    $entrypointPath = cdo_get_entrypoint_path();
+    $endpointUrl = cdo_build_public_url($entrypointPath);
+    $entrypoint = htmlspecialchars($entrypointPath, ENT_QUOTES, 'UTF-8');
+    $endpoint = htmlspecialchars($endpointUrl, ENT_QUOTES, 'UTF-8');
     $appVersion = htmlspecialchars(CDO_APP_VERSION, ENT_QUOTES, 'UTF-8');
     $protocolVersion = htmlspecialchars(CDO_PROTOCOL_VERSION, ENT_QUOTES, 'UTF-8');
+    $authState = cdo_html_text((string) $auth['authState']);
+    $authorized = $auth['authorized'] ? 'true' : 'false';
+    $authReason = cdo_html_text((string) $auth['authReason']);
+    $agentName = cdo_html_text($auth['agentName']);
+    $contextHint = cdo_html_text($auth['contextHint']);
+    $issuedAt = cdo_html_text($auth['issuedAt']);
+    $approvedAt = cdo_html_text($auth['approvedAt']);
+    $lastUsedAt = cdo_html_text($auth['lastUsedAt']);
+    $lockedAt = cdo_html_text($auth['lockedAt']);
+    $message = cdo_html_text($auth['message']);
+    $aiGuide = htmlspecialchars(<<<'TEXT'
+AI agent instructions for this endpoint:
+1. If the user gave you this URL, use this exact URL as the Streamable HTTP MCP endpoint.
+2. Do not replace this URL with /cdo.php, a repository path, or another guessed location.
+3. Do not inspect a local repository first unless the user explicitly asks; start by calling tools/list against this endpoint.
+4. Call tools/list, then call tools/call server_status to read authState, authorized, agentName, contextHint, approvedAt, and lastUsedAt.
+5. If not approved, call tools/call request_auth with arguments like {"agentName":"Codex","contextHint":"Codex desktop / project or deploy thread / YYYY-MM-DD"}.
+6. Give the approvalUrl to the user, ask them to open it and approve, then wait until they tell you approval is complete.
+7. Keep the returned bearer token private in the agent session. Do not ask the user to paste it back.
+8. After approval, send X-CDO-Bearer-Token: <bearerToken> on future MCP requests.
+9. Call server_status again to confirm authorized=true, then use protected file tools.
+10. Before write/delete/rename, explain the target path to the user and get explicit confirmation.
+TEXT, ENT_QUOTES, 'UTF-8');
 
     $bodyHtml = <<<HTML
 <h1>Chief-Deployment-Officer</h1>
-<p>単一PHPファイルのMCPエンドポイントです。現在は承認型認証と最小のファイル操作ツールを実装しています。</p>
+<p>単一PHPファイルのMCPエンドポイントです。このブラウザ画面は、先にユーザー向け確認、次にAIエージェント向け接続手順を表示します。</p>
+
+<section aria-labelledby="user-guidance-heading">
+<h2 id="user-guidance-heading">User guidance / ユーザー向け</h2>
+<p>AIエージェントにこのページのURLを渡すと、エージェントはこのURLをMCP endpointとして使い、必要に応じて承認要求を作れます。</p>
+<ul>
+  <li>AIに渡すURL / MCP endpoint: <code>{$endpoint}</code></li>
+  <li>認証設定: <code>{$authState}</code></li>
+  <li>このリクエストは認証済み: <code>{$authorized}</code></li>
+  <li>認証理由: <code>{$authReason}</code></li>
+  <li>承認AI: <code>{$agentName}</code></li>
+  <li>スレッド手がかり: <code>{$contextHint}</code></li>
+  <li>発行日時 issuedAt (UTC): <code>{$issuedAt}</code></li>
+  <li>承認日時 approvedAt (UTC): <code>{$approvedAt}</code></li>
+  <li>最終利用日時 lastUsedAt (UTC): <code>{$lastUsedAt}</code></li>
+  <li>ロック日時 lockedAt (UTC): <code>{$lockedAt}</code></li>
+  <li>メッセージ: <code>{$message}</code></li>
+</ul>
+<p>承認済みの場合は、上の「承認AI」「スレッド手がかり」「承認日時」を使って、どのAIエージェント・対話スレッドに許可したかを探せます。</p>
+<p>不要になった認証は、認証状態ファイルを削除してから <code>request_auth</code> をやり直してください。</p>
+
+<h3>危険操作の注意</h3>
+<ul>
+  <li><code>write_file</code>, <code>delete_file</code>, <code>delete_dir</code>, <code>rename_path</code> は承認済みエージェントだけが使えます。</li>
+  <li>書込・削除・リネーム前に、対象パスを <code>list_dir</code> / <code>read_file</code> で確認し、必要に応じてバックアップしてください。</li>
+  <li><code>confirm: true</code> は、ユーザーが対象と操作内容を確認した後だけ付けてください。</li>
+</ul>
+</section>
+
+<section aria-labelledby="ai-guidance-heading">
+<h2 id="ai-guidance-heading">AI agent guidance / AIエージェント向け</h2>
+<p>ユーザーがこのURLをAIエージェントに渡した場合は、このURL自体をMCP endpointとしてそのまま使ってください。ローカルリポジトリや別パスを推測してから始める必要はありません。</p>
+<pre><code>{$aiGuide}</code></pre>
+
+<h3>Connection details</h3>
 <ul>
   <li>エントリポイント: <code>{$entrypoint}</code></li>
+  <li>MCP endpoint: <code>{$endpoint}</code></li>
   <li>アプリバージョン: <code>{$appVersion}</code></li>
   <li>MCPプロトコル: <code>{$protocolVersion}</code></li>
   <li>公開ツール: <code>server_status</code>, <code>request_auth</code></li>
   <li>保護ツール: <code>list_dir</code>, <code>read_file</code>, <code>write_file</code>, <code>create_dir</code>, <code>delete_file</code>, <code>delete_dir</code>, <code>rename_path</code></li>
-  <li>QA: <code>composer qa</code></li>
 </ul>
+</section>
 HTML;
 
     cdo_render_page('Chief-Deployment-Officer', $bodyHtml);
@@ -452,6 +602,7 @@ function cdo_load_auth_state(): ?array
         'version' => 1,
         'state' => 'locked',
         'agentName' => null,
+        'contextHint' => null,
         'approvalSecret' => null,
         'pendingBearerToken' => null,
         'bearerTokenHash' => null,
@@ -592,6 +743,37 @@ function cdo_auth_debug_payload(array $authContext): array
     ];
 }
 
+function cdo_auth_state_public_payload(?array $state): array
+{
+    return [
+        'agentName' => cdo_public_text($state['agentName'] ?? null),
+        'contextHint' => cdo_public_text($state['contextHint'] ?? null),
+        'issuedAt' => cdo_public_time($state['issuedAt'] ?? null),
+        'approvedAt' => cdo_public_time($state['approvedAt'] ?? null),
+        'lastUsedAt' => cdo_public_time($state['lastUsedAt'] ?? null),
+        'lockedAt' => cdo_public_time($state['lockedAt'] ?? null),
+        'message' => cdo_public_text($state['message'] ?? null),
+    ];
+}
+
+function cdo_auth_public_payload(array $authContext): array
+{
+    $state = isset($authContext['state']) && is_array($authContext['state'])
+        ? $authContext['state']
+        : null;
+
+    return array_merge([
+        'authConfigured' => $state !== null,
+        'authState' => $state['state'] ?? 'not_configured',
+        'authorized' => (bool) ($authContext['isAuthorized'] ?? false),
+        'authReason' => (string) ($authContext['reason'] ?? 'unknown'),
+        'authorizationHeaderPresent' => (bool) ($authContext['authorizationHeaderPresent'] ?? false),
+        'inspectorBearerHeaderPresent' => (bool) ($authContext['inspectorBearerHeaderPresent'] ?? false),
+        'inspectorAuthorizationHeaderPresent' => (bool) ($authContext['inspectorAuthorizationHeaderPresent'] ?? false),
+        'bearerHeaderSource' => $authContext['tokenSource'] ?? null,
+    ], cdo_auth_state_public_payload($state));
+}
+
 function cdo_log_auth_context(array $authContext): array
 {
     cdo_debug_log('auth_context', cdo_auth_debug_payload($authContext));
@@ -680,8 +862,13 @@ function cdo_get_public_tools(): array
                     'inspectorBearerHeaderPresent' => ['type' => 'boolean'],
                     'inspectorAuthorizationHeaderPresent' => ['type' => 'boolean'],
                     'bearerHeaderSource' => ['type' => ['string', 'null']],
-                    'tokenHashPrefix' => ['type' => ['string', 'null']],
-                    'storedTokenHashPrefix' => ['type' => ['string', 'null']],
+                    'agentName' => ['type' => ['string', 'null']],
+                    'contextHint' => ['type' => ['string', 'null']],
+                    'issuedAt' => ['type' => ['string', 'null']],
+                    'approvedAt' => ['type' => ['string', 'null']],
+                    'lastUsedAt' => ['type' => ['string', 'null']],
+                    'lockedAt' => ['type' => ['string', 'null']],
+                    'message' => ['type' => ['string', 'null']],
                 ],
                 'required' => [
                     'appName',
@@ -698,8 +885,13 @@ function cdo_get_public_tools(): array
                     'inspectorBearerHeaderPresent',
                     'inspectorAuthorizationHeaderPresent',
                     'bearerHeaderSource',
-                    'tokenHashPrefix',
-                    'storedTokenHashPrefix',
+                    'agentName',
+                    'contextHint',
+                    'issuedAt',
+                    'approvedAt',
+                    'lastUsedAt',
+                    'lockedAt',
+                    'message',
                 ],
             ],
         ],
@@ -711,6 +903,7 @@ function cdo_get_public_tools(): array
                 'type' => 'object',
                 'properties' => [
                     'agentName' => ['type' => 'string'],
+                    'contextHint' => ['type' => 'string'],
                 ],
                 'required' => [],
             ],
@@ -724,6 +917,12 @@ function cdo_get_public_tools(): array
                     'preferredHeaderName' => ['type' => 'string'],
                     'alreadyConfigured' => ['type' => 'boolean'],
                     'approved' => ['type' => 'boolean'],
+                    'agentName' => ['type' => ['string', 'null']],
+                    'contextHint' => ['type' => ['string', 'null']],
+                    'issuedAt' => ['type' => ['string', 'null']],
+                    'approvedAt' => ['type' => ['string', 'null']],
+                    'lastUsedAt' => ['type' => ['string', 'null']],
+                    'lockedAt' => ['type' => ['string', 'null']],
                 ],
                 'required' => [
                     'status',
@@ -971,16 +1170,17 @@ function cdo_server_status_payload(array $authContext): array
         'appVersion' => CDO_APP_VERSION,
         'protocolVersion' => CDO_PROTOCOL_VERSION,
         'supportedProtocolVersions' => CDO_SUPPORTED_PROTOCOL_VERSIONS,
-        'entrypoint' => basename(cdo_get_entrypoint_path()),
+        'entrypoint' => cdo_get_entrypoint_path(),
         'ready' => true,
-    ], cdo_auth_debug_payload($authContext));
+    ], cdo_auth_public_payload($authContext));
 }
 
-function cdo_create_pending_auth_state(?string $agentName): array
+function cdo_create_pending_auth_state(?string $agentName, ?string $contextHint): array
 {
     $state = [
         'state' => 'pending',
         'agentName' => $agentName,
+        'contextHint' => $contextHint,
         'approvalSecret' => cdo_generate_secret(),
         'pendingBearerToken' => cdo_generate_secret(),
         'bearerTokenHash' => null,
@@ -999,50 +1199,55 @@ function cdo_create_pending_auth_state(?string $agentName): array
 function cdo_request_auth_payload(array $authContext, array $params): array
 {
     $agentName = null;
+    $contextHint = null;
 
     if (isset($params['agentName']) && is_string($params['agentName'])) {
         $agentName = trim($params['agentName']) !== '' ? trim($params['agentName']) : null;
     }
 
+    if (isset($params['contextHint']) && is_string($params['contextHint'])) {
+        $contextHint = trim($params['contextHint']) !== '' ? trim($params['contextHint']) : null;
+    }
+
     $state = $authContext['state'];
 
     if ($authContext['isAuthorized'] && $state !== null && ($state['state'] ?? null) === 'approved') {
-        return [
+        return array_merge(cdo_auth_state_public_payload($state), [
             'status' => 'approved',
             'message' => 'This bearer token is already approved.',
             'approved' => true,
-        ];
+        ]);
     }
 
     if ($state === null) {
-        $state = cdo_create_pending_auth_state($agentName);
+        $state = cdo_create_pending_auth_state($agentName, $contextHint);
     }
 
     if (($state['state'] ?? null) === 'pending') {
-        return [
+        return array_merge(cdo_auth_state_public_payload($state), [
             'status' => 'pending_approval',
             'message' => 'Give the approval URL to the user and wait for them to approve this agent. In MCP Inspector, prefer X-CDO-Bearer-Token: <token>.',
             'approvalUrl' => cdo_build_approval_url((string) $state['approvalSecret']),
             'bearerToken' => (string) $state['pendingBearerToken'],
             'preferredHeaderName' => 'X-CDO-Bearer-Token',
             'approved' => false,
-        ];
+        ]);
     }
 
     if (($state['state'] ?? null) === 'locked') {
-        return [
+        return array_merge(cdo_auth_state_public_payload($state), [
             'status' => 'locked',
             'message' => (string) ($state['message'] ?? 'Authentication is locked. Delete .cdo_auth.json to reset.'),
             'approved' => false,
-        ];
+        ]);
     }
 
-    return [
+    return array_merge(cdo_auth_state_public_payload($state), [
         'status' => 'already_configured',
         'message' => 'An approved agent is already configured. Delete .cdo_auth.json to reset.',
         'alreadyConfigured' => true,
         'approved' => false,
-    ];
+    ]);
 }
 
 function cdo_normalize_relative_path(?string $path): array
@@ -1706,35 +1911,45 @@ HTML;
 
 function cdo_render_approval_page(array $state): void
 {
-    $query = htmlspecialchars((string) $_GET[CDO_APPROVAL_QUERY_KEY], ENT_QUOTES, 'UTF-8');
     $agentName = isset($state['agentName']) && is_string($state['agentName']) && $state['agentName'] !== ''
         ? htmlspecialchars((string) $state['agentName'], ENT_QUOTES, 'UTF-8')
         : 'unknown-agent';
-    $action = htmlspecialchars(
-        cdo_get_entrypoint_path() . '?' . CDO_APPROVAL_QUERY_KEY . '=' . rawurlencode((string) $_GET[CDO_APPROVAL_QUERY_KEY]),
-        ENT_QUOTES,
-        'UTF-8'
-    );
+    $contextHint = cdo_html_text(cdo_public_text($state['contextHint'] ?? null));
+    $issuedAt = cdo_html_text(cdo_public_time($state['issuedAt'] ?? null));
 
     $bodyHtml = <<<HTML
 <h1>MCP Approval</h1>
-<p>エージェント <code>{$agentName}</code> に Chief-Deployment-Officer へのアクセスを許可しますか。</p>
-<p>承認すると、1エージェント専用の Bearer token が有効になります。</p>
-<form method="post" action="{$action}">
-  <input type="hidden" name="approval_secret" value="{$query}">
-  <button type="submit" name="approve" value="yes">はい</button>
+<p>この画面は、ユーザーがAIエージェントへのアクセス許可を確認するための承認画面です。</p>
+<p>次のAIエージェントに、Chief-Deployment-Officer の保護ツール利用を許可します。</p>
+<ul>
+  <li>承認AI: <code>{$agentName}</code></li>
+  <li>スレッド手がかり: <code>{$contextHint}</code></li>
+  <li>発行日時 issuedAt (UTC): <code>{$issuedAt}</code></li>
+</ul>
+<p>心当たりがない場合や、対象の対話スレッドを確認できない場合は、この画面を閉じてください。</p>
+<p>承認すると、1エージェント専用の Bearer token が有効になります。この画面にtokenは表示しません。</p>
+<form method="post">
+  <button type="submit" name="approve" value="yes">承認する</button>
 </form>
 HTML;
 
     cdo_render_page('MCP Approval', $bodyHtml);
 }
 
-function cdo_render_approval_success_page(): void
+function cdo_render_approval_success_page(array $state): void
 {
+    $agentName = cdo_html_text(cdo_public_text($state['agentName'] ?? null));
+    $contextHint = cdo_html_text(cdo_public_text($state['contextHint'] ?? null));
+    $approvedAt = cdo_html_text(cdo_public_time($state['approvedAt'] ?? null));
+
     $bodyHtml = <<<HTML
 <h1>Approval Complete</h1>
-<p>MCP bearer token を有効化しました。</p>
-<p>クライアント側では、発行済みの Bearer token を <code>Authorization: Bearer ...</code> または <code>X-CDO-Bearer-Token: ...</code> で送ってください。</p>
+<p>この画面は、ユーザー向けの承認完了画面です。</p>
+<p>AIエージェント用の Bearer token を有効化しました。</p>
+<p>承認AI: <code>{$agentName}</code></p>
+<p>スレッド手がかり: <code>{$contextHint}</code></p>
+<p>承認日時 approvedAt (UTC): <code>{$approvedAt}</code></p>
+<p>この画面にtokenは表示しません。元のAIエージェントとの対話に戻り、承認が完了したことを伝えてください。</p>
 HTML;
 
     cdo_render_page('Approval Complete', $bodyHtml);
@@ -1773,7 +1988,7 @@ function cdo_handle_approval_request(): bool
         $state['lockedAt'] = null;
         $state['message'] = null;
         cdo_save_auth_state($state);
-        cdo_render_approval_success_page();
+        cdo_render_approval_success_page($state);
         return true;
     }
 

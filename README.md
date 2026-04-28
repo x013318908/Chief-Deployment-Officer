@@ -2,6 +2,8 @@
 
 PHP単一ファイルで配布するChief-Deployment-Officerの開発用土台です。
 
+このREADMEは、`cdo.php` を開発・配布する人と、実装内容を把握したいAIエージェント向けです。承認操作をするユーザー向けの案内は、配置済み `cdo.php` のブラウザ画面と承認画面に集約します。
+
 現時点では、1エージェント限定の承認型認証と最小のファイル操作ツールまで入れています。
 
 - 本番想定のエントリポイント: `public_html/cdo.php`
@@ -41,6 +43,10 @@ MCP endpoint は次のどちらでも使えます。
 - 推奨: `http://127.0.0.1:8787/mcp`
 - 実ファイル直指定: `http://127.0.0.1:8787/cdo.php`
 
+ブラウザまたはAIエージェントが `cdo.php` にアクセスすると、MCP endpoint、認証状態、承認済みエージェント情報、危険操作の注意をまとめた案内ページを表示します。この画面はユーザー向けセクションを先に、AIエージェント向けセクションを後に表示します。
+
+AIエージェントにリモートの `cdo.php` URL を渡す場合は、そのURL自体を MCP endpoint としてそのまま使わせてください。AIエージェント側ではローカルリポジトリや別パスを推測せず、まず配置済みページのAI向けセクションを読み、`tools/list`、次に `server_status`、必要なら `request_auth` の順に呼びます。
+
 `/sse` は dev router で `cdo.php` に流れますが、SSE transport 自体は未実装です。MCP Inspector では Streamable HTTP を選び、URL は `/mcp` か `/cdo.php` を指定してください。
 
 現時点の認証は OAuth/OIDC ではありません。`/.well-known/oauth-protected-resource` などの discovery endpoint も未実装です。MCP Inspector の OAuth フローは使わず、`request_auth` で発行された token を手動でヘッダー設定してください。
@@ -64,13 +70,17 @@ MCP endpoint は次のどちらでも使えます。
 
 Chief-Deployment-Officer は `1ファイル=1エージェント認証` の運用を前提にします。`cdo.php` は配置ディレクトリごとに `.cdo_auth.json` を持つため、複数エージェントが必要な場合は `agent-a/cdo.php`, `agent-b/cdo.php` のようにサブディレクトリへコピーして使ってください。
 
-各コピーは別URL・別認証状態・別承認フローとして扱われます。1つの `cdo.php` の中で複数エージェントを管理する機能は追加しません。
+各コピーは別URL・別認証状態・別承認フローとして扱われます。サブディレクトリに置いたコピーの案内ページは、そのコピー自身のパスとMCP endpointを表示します。1つの `cdo.php` の中で複数エージェントを管理する機能は追加しません。
 
 ## 認証フロー
 
 1. 未認証の状態で `request_auth` を呼びます。
 2. 応答の `approvalUrl` をブラウザで開き、ユーザーが `はい` を押します。
 3. 同じ応答に含まれる `bearerToken` を `X-CDO-Bearer-Token: ...` で送ると、保護ツールが使えます。
+
+`request_auth` には任意で `agentName` と `contextHint` を渡せます。`contextHint` は、あとでユーザーが承認した対話スレッドを探すための短い手がかりです。例: `Codex desktop / Chief-Deployment-Officer release thread / 2026-04-28`。秘密情報やtokenは入れないでください。
+
+承認画面と承認完了画面はユーザー向けです。AIエージェントは `request_auth` の応答に含まれる `approvalUrl` をユーザーに提示し、「開いて承認したら知らせてください」と伝えます。同じ応答に含まれる `bearerToken` はAIエージェント側で保持し、ユーザーに貼り返してもらわない運用にしてください。承認後は `X-CDO-Bearer-Token: <bearerToken>` を付けて `server_status` を再確認します。
 
 MCP Inspector では `Authentication` パネルの custom headers に `X-CDO-Bearer-Token: <bearerToken>` を追加してください。`Authorization: Bearer ...` も受け付けますが、Inspector では専用ヘッダーのほうが切り分けしやすいです。
 
@@ -86,7 +96,7 @@ MCP Inspector では `Authentication` パネルの custom headers に `X-CDO-Bea
 - `authorized`: 現在のリクエストが承認済みとして通ったか
 - `authReason`: `missing_state`, `missing_token`, `invalid_token`, `authorized` などの理由
 - `bearerHeaderSource`: 実際に採用したヘッダー名
-- `tokenHashPrefix` と `storedTokenHashPrefix`: 送信 token と保存済み token hash の先頭一致確認
+- `agentName`, `contextHint`, `approvedAt`, `lastUsedAt`: どのAIエージェントにいつ承認したかの確認情報
 
 Inspector で保護ツールが見えない場合は、まず `server_status` を呼んでこの 4 項目を見てください。そのうえで `public_html/.cdo_debug.log` を開くと、`tools/list` と `auth_context` の判定履歴が確認できます。
 
