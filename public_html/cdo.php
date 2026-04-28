@@ -509,6 +509,9 @@ AI agent instructions for this endpoint:
 8. After approval, send X-CDO-Bearer-Token: <bearerToken> on future MCP requests.
 9. Call server_status again to confirm authorized=true, then use protected file tools.
 10. Before write/delete/rename, explain the target path to the user and get explicit confirmation.
+11. If a write/delete/rename tool call timeout happens, Do not retry the same operation immediately.
+12. First call server_status, then use list_dir and read_file to verify the target state.
+13. If the change is already reflected, treat it as success. If not reflected, ask the user before running the operation again.
 TEXT, ENT_QUOTES, 'UTF-8');
 
     $bodyHtml = <<<HTML
@@ -539,6 +542,7 @@ TEXT, ENT_QUOTES, 'UTF-8');
   <li><code>write_file</code>, <code>delete_file</code>, <code>delete_dir</code>, <code>rename_path</code> は承認済みエージェントだけが使えます。</li>
   <li>書込・削除・リネーム前に、対象パスを <code>list_dir</code> / <code>read_file</code> で確認し、必要に応じてバックアップしてください。</li>
   <li><code>confirm: true</code> は、ユーザーが対象と操作内容を確認した後だけ付けてください。</li>
+  <li>AIエージェントが応答待ちでtimeoutした場合でも、サーバー側では操作が反映済みの可能性があります。AIには即再実行ではなく状態確認をさせてください。</li>
 </ul>
 </section>
 
