@@ -398,13 +398,13 @@ function cdo_render_default_page(): void
 
     $bodyHtml = <<<HTML
 <h1>Chief-Deployment-Officer</h1>
-<p>単一PHPファイルのMCPエンドポイントです。現在は承認型認証と最小の読み取りツールを実装しています。</p>
+<p>単一PHPファイルのMCPエンドポイントです。現在は承認型認証と最小のファイル操作ツールを実装しています。</p>
 <ul>
   <li>エントリポイント: <code>{$entrypoint}</code></li>
   <li>アプリバージョン: <code>{$appVersion}</code></li>
   <li>MCPプロトコル: <code>{$protocolVersion}</code></li>
   <li>公開ツール: <code>server_status</code>, <code>request_auth</code></li>
-  <li>保護ツール: <code>list_dir</code>, <code>read_file</code>, <code>write_file</code>, <code>create_dir</code></li>
+  <li>保護ツール: <code>list_dir</code>, <code>read_file</code>, <code>write_file</code>, <code>create_dir</code>, <code>delete_file</code>, <code>delete_dir</code>, <code>rename_path</code></li>
   <li>QA: <code>composer qa</code></li>
 </ul>
 HTML;
@@ -866,6 +866,87 @@ function cdo_get_create_dir_tool(): array
     ];
 }
 
+function cdo_get_delete_file_tool(): array
+{
+    return [
+        'name' => 'delete_file',
+        'title' => 'Delete File',
+        'description' => 'Delete a file under the MCP entrypoint directory. Requires confirm:true.',
+        'inputSchema' => [
+            'type' => 'object',
+            'properties' => [
+                'path' => ['type' => 'string'],
+                'confirm' => ['type' => 'boolean'],
+            ],
+            'required' => ['path', 'confirm'],
+        ],
+        'outputSchema' => [
+            'type' => 'object',
+            'properties' => [
+                'path' => ['type' => 'string'],
+                'name' => ['type' => 'string'],
+                'deleted' => ['type' => 'boolean'],
+            ],
+            'required' => ['path', 'name', 'deleted'],
+        ],
+    ];
+}
+
+function cdo_get_delete_dir_tool(): array
+{
+    return [
+        'name' => 'delete_dir',
+        'title' => 'Delete Directory',
+        'description' => 'Delete an empty directory under the MCP entrypoint directory. Requires confirm:true.',
+        'inputSchema' => [
+            'type' => 'object',
+            'properties' => [
+                'path' => ['type' => 'string'],
+                'confirm' => ['type' => 'boolean'],
+            ],
+            'required' => ['path', 'confirm'],
+        ],
+        'outputSchema' => [
+            'type' => 'object',
+            'properties' => [
+                'path' => ['type' => 'string'],
+                'name' => ['type' => 'string'],
+                'deleted' => ['type' => 'boolean'],
+            ],
+            'required' => ['path', 'name', 'deleted'],
+        ],
+    ];
+}
+
+function cdo_get_rename_path_tool(): array
+{
+    return [
+        'name' => 'rename_path',
+        'title' => 'Rename Path',
+        'description' => 'Rename or move a file or directory under the MCP entrypoint directory. Requires confirm:true and never replaces existing paths.',
+        'inputSchema' => [
+            'type' => 'object',
+            'properties' => [
+                'from' => ['type' => 'string'],
+                'to' => ['type' => 'string'],
+                'confirm' => ['type' => 'boolean'],
+            ],
+            'required' => ['from', 'to', 'confirm'],
+        ],
+        'outputSchema' => [
+            'type' => 'object',
+            'properties' => [
+                'from' => ['type' => 'string'],
+                'to' => ['type' => 'string'],
+                'name' => ['type' => 'string'],
+                'type' => ['type' => 'string'],
+                'renamed' => ['type' => 'boolean'],
+            ],
+            'required' => ['from', 'to', 'name', 'type', 'renamed'],
+        ],
+    ];
+}
+
 function cdo_get_tools(array $authContext): array
 {
     $tools = cdo_get_public_tools();
@@ -875,6 +956,9 @@ function cdo_get_tools(array $authContext): array
         $tools[] = cdo_get_read_file_tool();
         $tools[] = cdo_get_write_file_tool();
         $tools[] = cdo_get_create_dir_tool();
+        $tools[] = cdo_get_delete_file_tool();
+        $tools[] = cdo_get_delete_dir_tool();
+        $tools[] = cdo_get_rename_path_tool();
     }
 
     return $tools;
@@ -1126,6 +1210,26 @@ function cdo_validate_writable_relative_path(array $normalized, string $operatio
     if (cdo_target_is_current_entrypoint((string) $normalized['filesystemPath'])) {
         throw new InvalidArgumentException('The current entrypoint file cannot be modified.');
     }
+}
+
+function cdo_require_confirm(array $params, string $operation): void
+{
+    if (!isset($params['confirm']) || $params['confirm'] !== true) {
+        throw new InvalidArgumentException($operation . ' requires confirm:true.');
+    }
+}
+
+function cdo_directory_is_empty(string $directoryPath): bool
+{
+    $iterator = new DirectoryIterator($directoryPath);
+
+    foreach ($iterator as $item) {
+        if (!$item->isDot()) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 function cdo_decode_write_content(array $params): array
@@ -1453,6 +1557,139 @@ function cdo_create_dir_payload(array $params): array
         'name' => basename($relativePath),
         'created' => true,
         'alreadyExisted' => false,
+    ];
+}
+
+function cdo_delete_file_payload(array $params): array
+{
+    if (!isset($params['path']) || !is_string($params['path'])) {
+        throw new InvalidArgumentException('delete_file path must be a string.');
+    }
+
+    cdo_require_confirm($params, 'delete_file');
+
+    $normalized = cdo_normalize_relative_path($params['path']);
+    cdo_validate_writable_relative_path($normalized, 'delete_file');
+
+    cdo_resolve_existing_path($normalized);
+
+    $filePath = (string) $normalized['filesystemPath'];
+    $relativePath = (string) $normalized['relativePath'];
+
+    if (is_dir($filePath)) {
+        throw new InvalidArgumentException('delete_file path points to a directory.');
+    }
+
+    if (!is_file($filePath)) {
+        throw new InvalidArgumentException('File does not exist.');
+    }
+
+    if (!@unlink($filePath)) {
+        throw new InvalidArgumentException('File could not be deleted.');
+    }
+
+    return [
+        'path' => $relativePath,
+        'name' => basename($relativePath),
+        'deleted' => true,
+    ];
+}
+
+function cdo_delete_dir_payload(array $params): array
+{
+    if (!isset($params['path']) || !is_string($params['path'])) {
+        throw new InvalidArgumentException('delete_dir path must be a string.');
+    }
+
+    cdo_require_confirm($params, 'delete_dir');
+
+    $normalized = cdo_normalize_relative_path($params['path']);
+    cdo_validate_writable_relative_path($normalized, 'delete_dir');
+
+    cdo_resolve_existing_path($normalized);
+
+    $directoryPath = (string) $normalized['filesystemPath'];
+    $relativePath = (string) $normalized['relativePath'];
+
+    if (!is_dir($directoryPath) || is_link($directoryPath)) {
+        throw new InvalidArgumentException('delete_dir path must point to a directory.');
+    }
+
+    if (!cdo_directory_is_empty($directoryPath)) {
+        throw new InvalidArgumentException('Directory is not empty.');
+    }
+
+    if (!@rmdir($directoryPath)) {
+        throw new InvalidArgumentException('Directory could not be deleted.');
+    }
+
+    return [
+        'path' => $relativePath,
+        'name' => basename($relativePath),
+        'deleted' => true,
+    ];
+}
+
+function cdo_rename_path_payload(array $params): array
+{
+    if (!isset($params['from']) || !is_string($params['from'])) {
+        throw new InvalidArgumentException('rename_path from must be a string.');
+    }
+
+    if (!isset($params['to']) || !is_string($params['to'])) {
+        throw new InvalidArgumentException('rename_path to must be a string.');
+    }
+
+    cdo_require_confirm($params, 'rename_path');
+
+    $fromNormalized = cdo_normalize_relative_path($params['from']);
+    $toNormalized = cdo_normalize_relative_path($params['to']);
+    cdo_validate_writable_relative_path($fromNormalized, 'rename_path from');
+    cdo_validate_writable_relative_path($toNormalized, 'rename_path to');
+
+    $fromResolvedPath = cdo_resolve_existing_path($fromNormalized);
+    $fromPath = (string) $fromNormalized['filesystemPath'];
+    $toPath = (string) $toNormalized['filesystemPath'];
+    $fromRelativePath = (string) $fromNormalized['relativePath'];
+    $toRelativePath = (string) $toNormalized['relativePath'];
+
+    if (!is_file($fromPath) && !is_dir($fromPath)) {
+        throw new InvalidArgumentException('rename_path from must point to a file or directory.');
+    }
+
+    if (file_exists($toPath) || is_link($toPath)) {
+        throw new InvalidArgumentException('rename_path destination already exists.');
+    }
+
+    $toParentPath = dirname($toPath);
+    $resolvedToParentPath = cdo_resolve_existing_ancestor_path($toParentPath);
+
+    if (str_replace('\\', '/', realpath($toParentPath) ?: '') !== str_replace('\\', '/', $resolvedToParentPath)) {
+        throw new InvalidArgumentException('rename_path destination parent does not exist.');
+    }
+
+    $type = is_dir($fromPath) ? 'dir' : 'file';
+
+    if ($type === 'dir') {
+        $fromResolvedForCompare = strtolower(rtrim(str_replace('\\', '/', $fromResolvedPath), '/'));
+        $toParentForCompare = strtolower(rtrim(str_replace('\\', '/', $resolvedToParentPath), '/'));
+
+        if ($toParentForCompare === $fromResolvedForCompare
+            || strpos($toParentForCompare, $fromResolvedForCompare . '/') === 0) {
+            throw new InvalidArgumentException('rename_path cannot move a directory into itself.');
+        }
+    }
+
+    if (!@rename($fromPath, $toPath)) {
+        throw new InvalidArgumentException('Path could not be renamed.');
+    }
+
+    return [
+        'from' => $fromRelativePath,
+        'to' => $toRelativePath,
+        'name' => basename($toRelativePath),
+        'type' => $type,
+        'renamed' => true,
     ];
 }
 
@@ -1831,6 +2068,108 @@ function cdo_handle_request(array $message): void
 
                 cdo_jsonrpc_result($id, cdo_tool_result(
                     ($payload['created'] ? 'Created directory ' : 'Directory already exists: ') . $payload['path'] . '.',
+                    $payload
+                ), 200, [
+                    'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                ]);
+                return;
+            }
+
+            if ($toolName === 'delete_file') {
+                if (!$authContext['isAuthorized']) {
+                    $message = 'Authentication required. Use request_auth and then send Authorization: Bearer <token> or X-CDO-Bearer-Token: <token>.';
+
+                    if (($authContext['state']['state'] ?? null) === 'locked') {
+                        $message = (string) ($authContext['state']['message'] ?? 'Authentication is locked.');
+                    }
+
+                    cdo_jsonrpc_error($id, -32001, $message, 200, [
+                        'reason' => $authContext['reason'],
+                    ], [
+                        'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                    ]);
+                    return;
+                }
+
+                try {
+                    $payload = cdo_delete_file_payload($arguments);
+                } catch (InvalidArgumentException $exception) {
+                    cdo_jsonrpc_error($id, -32602, $exception->getMessage(), 200, null, [
+                        'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                    ]);
+                    return;
+                }
+
+                cdo_jsonrpc_result($id, cdo_tool_result(
+                    'Deleted file ' . $payload['path'] . '.',
+                    $payload
+                ), 200, [
+                    'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                ]);
+                return;
+            }
+
+            if ($toolName === 'delete_dir') {
+                if (!$authContext['isAuthorized']) {
+                    $message = 'Authentication required. Use request_auth and then send Authorization: Bearer <token> or X-CDO-Bearer-Token: <token>.';
+
+                    if (($authContext['state']['state'] ?? null) === 'locked') {
+                        $message = (string) ($authContext['state']['message'] ?? 'Authentication is locked.');
+                    }
+
+                    cdo_jsonrpc_error($id, -32001, $message, 200, [
+                        'reason' => $authContext['reason'],
+                    ], [
+                        'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                    ]);
+                    return;
+                }
+
+                try {
+                    $payload = cdo_delete_dir_payload($arguments);
+                } catch (InvalidArgumentException $exception) {
+                    cdo_jsonrpc_error($id, -32602, $exception->getMessage(), 200, null, [
+                        'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                    ]);
+                    return;
+                }
+
+                cdo_jsonrpc_result($id, cdo_tool_result(
+                    'Deleted directory ' . $payload['path'] . '.',
+                    $payload
+                ), 200, [
+                    'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                ]);
+                return;
+            }
+
+            if ($toolName === 'rename_path') {
+                if (!$authContext['isAuthorized']) {
+                    $message = 'Authentication required. Use request_auth and then send Authorization: Bearer <token> or X-CDO-Bearer-Token: <token>.';
+
+                    if (($authContext['state']['state'] ?? null) === 'locked') {
+                        $message = (string) ($authContext['state']['message'] ?? 'Authentication is locked.');
+                    }
+
+                    cdo_jsonrpc_error($id, -32001, $message, 200, [
+                        'reason' => $authContext['reason'],
+                    ], [
+                        'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                    ]);
+                    return;
+                }
+
+                try {
+                    $payload = cdo_rename_path_payload($arguments);
+                } catch (InvalidArgumentException $exception) {
+                    cdo_jsonrpc_error($id, -32602, $exception->getMessage(), 200, null, [
+                        'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                    ]);
+                    return;
+                }
+
+                cdo_jsonrpc_result($id, cdo_tool_result(
+                    'Renamed ' . $payload['from'] . ' to ' . $payload['to'] . '.',
                     $payload
                 ), 200, [
                     'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,

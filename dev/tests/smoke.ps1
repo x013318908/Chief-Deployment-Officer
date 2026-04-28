@@ -178,6 +178,18 @@ $nestedDir = Join-Path $fixtureDir 'nested'
 $nestedFile = Join-Path $nestedDir 'inside.txt'
 $writeDir = Join-Path $repoRoot 'public_html\smoke-write'
 $recursiveWriteDir = Join-Path $repoRoot 'public_html\smoke-recursive'
+$deleteDir = Join-Path $repoRoot 'public_html\smoke-delete'
+$deleteFile = Join-Path $deleteDir 'delete-me.txt'
+$deleteEmptyDir = Join-Path $deleteDir 'empty-dir'
+$deleteNonEmptyDir = Join-Path $deleteDir 'non-empty-dir'
+$deleteNonEmptyFile = Join-Path $deleteNonEmptyDir 'inside.txt'
+$renameDir = Join-Path $repoRoot 'public_html\smoke-rename'
+$renameFileSource = Join-Path $renameDir 'file-source.txt'
+$renameFileDestination = Join-Path $renameDir 'file-destination.txt'
+$renameDirSource = Join-Path $renameDir 'dir-source'
+$renameDirFile = Join-Path $renameDirSource 'inside.txt'
+$renameDirDestination = Join-Path $renameDir 'dir-destination'
+$renameExistingDestination = Join-Path $renameDir 'existing.txt'
 
 Assert-True (Test-Path $entrypoint) "Missing entrypoint: $entrypoint"
 Assert-True (Test-Path $router) "Missing router: $router"
@@ -191,6 +203,8 @@ Remove-IfExists $internalControlFile
 Remove-IfExists $fixtureDir
 Remove-IfExists $writeDir
 Remove-IfExists $recursiveWriteDir
+Remove-IfExists $deleteDir
+Remove-IfExists $renameDir
 
 Copy-Item -Path $entrypoint -Destination $renamedEntrypoint -Force
 Set-Content -Path $visibleDotFile -Value 'visible-root-dot'
@@ -200,6 +214,16 @@ New-Item -ItemType Directory -Path $nestedDir | Out-Null
 Set-Content -Path $fixtureFile -Value 'alpha'
 Set-Content -Path $fixtureDotFile -Value 'beta'
 Set-Content -Path $nestedFile -Value 'inside'
+New-Item -ItemType Directory -Path $deleteDir | Out-Null
+New-Item -ItemType Directory -Path $deleteEmptyDir | Out-Null
+New-Item -ItemType Directory -Path $deleteNonEmptyDir | Out-Null
+Set-Content -Path $deleteFile -Value 'delete-me'
+Set-Content -Path $deleteNonEmptyFile -Value 'non-empty'
+New-Item -ItemType Directory -Path $renameDir | Out-Null
+New-Item -ItemType Directory -Path $renameDirSource | Out-Null
+Set-Content -Path $renameFileSource -Value 'rename-file'
+Set-Content -Path $renameDirFile -Value 'rename-dir-file'
+Set-Content -Path $renameExistingDestination -Value 'existing'
 
 $previousAuthPath = $env:CDO_AUTH_STATE_PATH
 $previousDebugPath = $env:CDO_DEBUG_LOG_PATH
@@ -228,6 +252,7 @@ try {
     Assert-True ($html.Content.Contains('Chief-Deployment-Officer')) 'HTML response should contain app name.'
     Assert-True ($html.Content.Contains('request_auth')) 'HTML response should mention request_auth.'
     Assert-True ($html.Content.Contains('list_dir')) 'HTML response should mention list_dir.'
+    Assert-True ($html.Content.Contains('delete_file')) 'HTML response should mention delete_file.'
 
     $directFile = Invoke-SmokeRequest -Url $fileUrl -Method 'GET'
     Assert-True ($directFile.StatusCode -eq 200) 'GET /cdo.php should return 200.'
@@ -334,6 +359,9 @@ try {
     Assert-True (-not ($toolNames -contains 'read_file')) 'tools/list should not expose read_file before auth.'
     Assert-True (-not ($toolNames -contains 'write_file')) 'tools/list should not expose write_file before auth.'
     Assert-True (-not ($toolNames -contains 'create_dir')) 'tools/list should not expose create_dir before auth.'
+    Assert-True (-not ($toolNames -contains 'delete_file')) 'tools/list should not expose delete_file before auth.'
+    Assert-True (-not ($toolNames -contains 'delete_dir')) 'tools/list should not expose delete_dir before auth.'
+    Assert-True (-not ($toolNames -contains 'rename_path')) 'tools/list should not expose rename_path before auth.'
 
     $unauthorizedListDir = Invoke-JsonRpcTool -Url $mcpUrl -Id 4 -ToolName 'list_dir'
     Assert-True ($unauthorizedListDir.StatusCode -eq 200) 'Unauthorized list_dir should still return JSON-RPC.'
@@ -362,6 +390,31 @@ try {
     Assert-True ($unauthorizedCreateDir.StatusCode -eq 200) 'Unauthorized create_dir should still return JSON-RPC.'
     $unauthorizedCreateDirJson = $unauthorizedCreateDir.Content | ConvertFrom-Json
     Assert-True ($unauthorizedCreateDirJson.error.code -eq -32001) 'Unauthorized create_dir should return an auth error.'
+
+    $unauthorizedDeleteFile = Invoke-JsonRpcTool -Url $mcpUrl -Id 69 -ToolName 'delete_file' -Arguments @{
+        path = 'smoke-delete/delete-me.txt'
+        confirm = $true
+    }
+    Assert-True ($unauthorizedDeleteFile.StatusCode -eq 200) 'Unauthorized delete_file should still return JSON-RPC.'
+    $unauthorizedDeleteFileJson = $unauthorizedDeleteFile.Content | ConvertFrom-Json
+    Assert-True ($unauthorizedDeleteFileJson.error.code -eq -32001) 'Unauthorized delete_file should return an auth error.'
+
+    $unauthorizedDeleteDir = Invoke-JsonRpcTool -Url $mcpUrl -Id 70 -ToolName 'delete_dir' -Arguments @{
+        path = 'smoke-delete/empty-dir'
+        confirm = $true
+    }
+    Assert-True ($unauthorizedDeleteDir.StatusCode -eq 200) 'Unauthorized delete_dir should still return JSON-RPC.'
+    $unauthorizedDeleteDirJson = $unauthorizedDeleteDir.Content | ConvertFrom-Json
+    Assert-True ($unauthorizedDeleteDirJson.error.code -eq -32001) 'Unauthorized delete_dir should return an auth error.'
+
+    $unauthorizedRenamePath = Invoke-JsonRpcTool -Url $mcpUrl -Id 71 -ToolName 'rename_path' -Arguments @{
+        from = 'smoke-rename/file-source.txt'
+        to = 'smoke-rename/blocked.txt'
+        confirm = $true
+    }
+    Assert-True ($unauthorizedRenamePath.StatusCode -eq 200) 'Unauthorized rename_path should still return JSON-RPC.'
+    $unauthorizedRenamePathJson = $unauthorizedRenamePath.Content | ConvertFrom-Json
+    Assert-True ($unauthorizedRenamePathJson.error.code -eq -32001) 'Unauthorized rename_path should return an auth error.'
 
     $serverStatusBeforeAuth = Invoke-JsonRpcTool -Url $mcpUrl -Id 40 -ToolName 'server_status'
     $serverStatusBeforeAuthJson = $serverStatusBeforeAuth.Content | ConvertFrom-Json
@@ -419,6 +472,9 @@ try {
     Assert-True ($toolNamesAuthorized -contains 'read_file') 'Authorized tools/list should expose read_file.'
     Assert-True ($toolNamesAuthorized -contains 'write_file') 'Authorized tools/list should expose write_file.'
     Assert-True ($toolNamesAuthorized -contains 'create_dir') 'Authorized tools/list should expose create_dir.'
+    Assert-True ($toolNamesAuthorized -contains 'delete_file') 'Authorized tools/list should expose delete_file.'
+    Assert-True ($toolNamesAuthorized -contains 'delete_dir') 'Authorized tools/list should expose delete_dir.'
+    Assert-True ($toolNamesAuthorized -contains 'rename_path') 'Authorized tools/list should expose rename_path.'
 
     $serverStatusAfterAuth = Invoke-JsonRpcTool -Url $mcpUrl -Id 41 -ToolName 'server_status' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token'
     $serverStatusAfterAuthJson = $serverStatusAfterAuth.Content | ConvertFrom-Json
@@ -626,6 +682,194 @@ try {
     $createInternalJson = $createInternal.Content | ConvertFrom-Json
     Assert-True ($createInternalJson.error.code -eq -32602) 'create_dir should reject internal control file names.'
 
+    $deleteFileWithoutConfirm = Invoke-JsonRpcTool -Url $mcpUrl -Id 72 -ToolName 'delete_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-delete/delete-me.txt'
+    }
+    $deleteFileWithoutConfirmJson = $deleteFileWithoutConfirm.Content | ConvertFrom-Json
+    Assert-True ($deleteFileWithoutConfirmJson.error.code -eq -32602) 'delete_file should require confirm:true.'
+
+    $deleteDirWithoutConfirm = Invoke-JsonRpcTool -Url $mcpUrl -Id 73 -ToolName 'delete_dir' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-delete/empty-dir'
+    }
+    $deleteDirWithoutConfirmJson = $deleteDirWithoutConfirm.Content | ConvertFrom-Json
+    Assert-True ($deleteDirWithoutConfirmJson.error.code -eq -32602) 'delete_dir should require confirm:true.'
+
+    $renameWithoutConfirm = Invoke-JsonRpcTool -Url $mcpUrl -Id 74 -ToolName 'rename_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        from = 'smoke-rename/file-source.txt'
+        to = 'smoke-rename/without-confirm.txt'
+    }
+    $renameWithoutConfirmJson = $renameWithoutConfirm.Content | ConvertFrom-Json
+    Assert-True ($renameWithoutConfirmJson.error.code -eq -32602) 'rename_path should require confirm:true.'
+
+    $deleteParentTraversal = Invoke-JsonRpcTool -Url $mcpUrl -Id 75 -ToolName 'delete_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = '../outside.txt'
+        confirm = $true
+    }
+    $deleteParentTraversalJson = $deleteParentTraversal.Content | ConvertFrom-Json
+    Assert-True ($deleteParentTraversalJson.error.code -eq -32602) 'delete_file should reject parent directory paths.'
+
+    $deleteAbsolute = Invoke-JsonRpcTool -Url $mcpUrl -Id 76 -ToolName 'delete_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = '/tmp/outside.txt'
+        confirm = $true
+    }
+    $deleteAbsoluteJson = $deleteAbsolute.Content | ConvertFrom-Json
+    Assert-True ($deleteAbsoluteJson.error.code -eq -32602) 'delete_file should reject absolute paths.'
+
+    $deleteInternal = Invoke-JsonRpcTool -Url $mcpUrl -Id 77 -ToolName 'delete_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = '.cdo_secret.txt'
+        confirm = $true
+    }
+    $deleteInternalJson = $deleteInternal.Content | ConvertFrom-Json
+    Assert-True ($deleteInternalJson.error.code -eq -32602) 'delete_file should reject internal control files.'
+
+    $deleteEntrypoint = Invoke-JsonRpcTool -Url $mcpUrl -Id 78 -ToolName 'delete_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'cdo.php'
+        confirm = $true
+    }
+    $deleteEntrypointJson = $deleteEntrypoint.Content | ConvertFrom-Json
+    Assert-True ($deleteEntrypointJson.error.code -eq -32602) 'delete_file should reject the current entrypoint file.'
+
+    $deleteDirectoryAsFile = Invoke-JsonRpcTool -Url $mcpUrl -Id 79 -ToolName 'delete_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-delete/non-empty-dir'
+        confirm = $true
+    }
+    $deleteDirectoryAsFileJson = $deleteDirectoryAsFile.Content | ConvertFrom-Json
+    Assert-True ($deleteDirectoryAsFileJson.error.code -eq -32602) 'delete_file should reject directories.'
+
+    $deleteNonEmptyDir = Invoke-JsonRpcTool -Url $mcpUrl -Id 80 -ToolName 'delete_dir' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-delete/non-empty-dir'
+        confirm = $true
+    }
+    $deleteNonEmptyDirJson = $deleteNonEmptyDir.Content | ConvertFrom-Json
+    Assert-True ($deleteNonEmptyDirJson.error.code -eq -32602) 'delete_dir should reject non-empty directories.'
+
+    $deleteFile = Invoke-JsonRpcTool -Url $mcpUrl -Id 81 -ToolName 'delete_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-delete/delete-me.txt'
+        confirm = $true
+    }
+    $deleteFileJson = $deleteFile.Content | ConvertFrom-Json
+    Assert-True ($deleteFileJson.result.structuredContent.deleted) 'delete_file should delete files.'
+    Assert-True ($deleteFileJson.result.structuredContent.path -eq 'smoke-delete/delete-me.txt') 'delete_file should report the deleted path.'
+
+    $readDeletedFile = Invoke-JsonRpcTool -Url $mcpUrl -Id 82 -ToolName 'read_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-delete/delete-me.txt'
+    }
+    $readDeletedFileJson = $readDeletedFile.Content | ConvertFrom-Json
+    Assert-True ($readDeletedFileJson.error.code -eq -32602) 'read_file should fail after delete_file succeeds.'
+
+    $deleteEmptyDir = Invoke-JsonRpcTool -Url $mcpUrl -Id 83 -ToolName 'delete_dir' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-delete/empty-dir'
+        confirm = $true
+    }
+    $deleteEmptyDirJson = $deleteEmptyDir.Content | ConvertFrom-Json
+    Assert-True ($deleteEmptyDirJson.result.structuredContent.deleted) 'delete_dir should delete empty directories.'
+
+    $renameExistingDestination = Invoke-JsonRpcTool -Url $mcpUrl -Id 84 -ToolName 'rename_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        from = 'smoke-rename/file-source.txt'
+        to = 'smoke-rename/existing.txt'
+        confirm = $true
+    }
+    $renameExistingDestinationJson = $renameExistingDestination.Content | ConvertFrom-Json
+    Assert-True ($renameExistingDestinationJson.error.code -eq -32602) 'rename_path should reject existing destinations.'
+
+    $renameAbsoluteDestination = Invoke-JsonRpcTool -Url $mcpUrl -Id 85 -ToolName 'rename_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        from = 'smoke-rename/file-source.txt'
+        to = '/tmp/outside.txt'
+        confirm = $true
+    }
+    $renameAbsoluteDestinationJson = $renameAbsoluteDestination.Content | ConvertFrom-Json
+    Assert-True ($renameAbsoluteDestinationJson.error.code -eq -32602) 'rename_path should reject absolute destination paths.'
+
+    $renameParentTraversal = Invoke-JsonRpcTool -Url $mcpUrl -Id 86 -ToolName 'rename_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        from = 'smoke-rename/file-source.txt'
+        to = '../outside.txt'
+        confirm = $true
+    }
+    $renameParentTraversalJson = $renameParentTraversal.Content | ConvertFrom-Json
+    Assert-True ($renameParentTraversalJson.error.code -eq -32602) 'rename_path should reject parent directory destination paths.'
+
+    $renameInternalSource = Invoke-JsonRpcTool -Url $mcpUrl -Id 87 -ToolName 'rename_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        from = '.cdo_secret.txt'
+        to = 'smoke-rename/internal-source.txt'
+        confirm = $true
+    }
+    $renameInternalSourceJson = $renameInternalSource.Content | ConvertFrom-Json
+    Assert-True ($renameInternalSourceJson.error.code -eq -32602) 'rename_path should reject internal control files as the source.'
+
+    $renameInternalDestination = Invoke-JsonRpcTool -Url $mcpUrl -Id 88 -ToolName 'rename_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        from = 'smoke-rename/file-source.txt'
+        to = '.cdo_newname'
+        confirm = $true
+    }
+    $renameInternalDestinationJson = $renameInternalDestination.Content | ConvertFrom-Json
+    Assert-True ($renameInternalDestinationJson.error.code -eq -32602) 'rename_path should reject internal control files as the destination.'
+
+    $renameEntrypointSource = Invoke-JsonRpcTool -Url $mcpUrl -Id 89 -ToolName 'rename_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        from = 'cdo.php'
+        to = 'smoke-rename/entrypoint-source.php'
+        confirm = $true
+    }
+    $renameEntrypointSourceJson = $renameEntrypointSource.Content | ConvertFrom-Json
+    Assert-True ($renameEntrypointSourceJson.error.code -eq -32602) 'rename_path should reject the current entrypoint file as the source.'
+
+    $renameEntrypointDestination = Invoke-JsonRpcTool -Url $mcpUrl -Id 90 -ToolName 'rename_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        from = 'smoke-rename/file-source.txt'
+        to = 'cdo.php'
+        confirm = $true
+    }
+    $renameEntrypointDestinationJson = $renameEntrypointDestination.Content | ConvertFrom-Json
+    Assert-True ($renameEntrypointDestinationJson.error.code -eq -32602) 'rename_path should reject the current entrypoint file as the destination.'
+
+    $renameMissingParent = Invoke-JsonRpcTool -Url $mcpUrl -Id 91 -ToolName 'rename_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        from = 'smoke-rename/file-source.txt'
+        to = 'missing-parent/renamed.txt'
+        confirm = $true
+    }
+    $renameMissingParentJson = $renameMissingParent.Content | ConvertFrom-Json
+    Assert-True ($renameMissingParentJson.error.code -eq -32602) 'rename_path should reject missing destination parents.'
+
+    $renameFile = Invoke-JsonRpcTool -Url $mcpUrl -Id 92 -ToolName 'rename_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        from = 'smoke-rename/file-source.txt'
+        to = 'smoke-rename/file-destination.txt'
+        confirm = $true
+    }
+    $renameFileJson = $renameFile.Content | ConvertFrom-Json
+    Assert-True ($renameFileJson.result.structuredContent.renamed) 'rename_path should rename files.'
+    Assert-True ($renameFileJson.result.structuredContent.type -eq 'file') 'rename_path should report file renames.'
+
+    $readRenamedFileSource = Invoke-JsonRpcTool -Url $mcpUrl -Id 93 -ToolName 'read_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-rename/file-source.txt'
+    }
+    $readRenamedFileSourceJson = $readRenamedFileSource.Content | ConvertFrom-Json
+    Assert-True ($readRenamedFileSourceJson.error.code -eq -32602) 'read_file should fail on the old file path after rename_path.'
+
+    $readRenamedFileDestination = Invoke-JsonRpcTool -Url $mcpUrl -Id 94 -ToolName 'read_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-rename/file-destination.txt'
+    }
+    $readRenamedFileDestinationJson = $readRenamedFileDestination.Content | ConvertFrom-Json
+    Assert-True ($readRenamedFileDestinationJson.result.structuredContent.content.Contains('rename-file')) 'read_file should read the new file path after rename_path.'
+
+    $renameDirectory = Invoke-JsonRpcTool -Url $mcpUrl -Id 95 -ToolName 'rename_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        from = 'smoke-rename/dir-source'
+        to = 'smoke-rename/dir-destination'
+        confirm = $true
+    }
+    $renameDirectoryJson = $renameDirectory.Content | ConvertFrom-Json
+    Assert-True ($renameDirectoryJson.result.structuredContent.renamed) 'rename_path should rename directories.'
+    Assert-True ($renameDirectoryJson.result.structuredContent.type -eq 'dir') 'rename_path should report directory renames.'
+
+    $readRenamedDirectorySource = Invoke-JsonRpcTool -Url $mcpUrl -Id 96 -ToolName 'read_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-rename/dir-source/inside.txt'
+    }
+    $readRenamedDirectorySourceJson = $readRenamedDirectorySource.Content | ConvertFrom-Json
+    Assert-True ($readRenamedDirectorySourceJson.error.code -eq -32602) 'read_file should fail on old directory contents after rename_path.'
+
+    $readRenamedDirectoryDestination = Invoke-JsonRpcTool -Url $mcpUrl -Id 97 -ToolName 'read_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-rename/dir-destination/inside.txt'
+    }
+    $readRenamedDirectoryDestinationJson = $readRenamedDirectoryDestination.Content | ConvertFrom-Json
+    Assert-True ($readRenamedDirectoryDestinationJson.result.structuredContent.content.Contains('rename-dir-file')) 'read_file should read moved directory contents after rename_path.'
+
     $invalidParent = Invoke-JsonRpcTool -Url $mcpUrl -Id 11 -ToolName 'list_dir' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
         path = '..'
     }
@@ -687,5 +931,7 @@ try {
     Remove-IfExists $fixtureDir
     Remove-IfExists $writeDir
     Remove-IfExists $recursiveWriteDir
+    Remove-IfExists $deleteDir
+    Remove-IfExists $renameDir
     Remove-IfExists $tmpDir
 }
