@@ -14,6 +14,14 @@ function Assert-True {
     }
 }
 
+function ConvertFrom-Utf8Base64 {
+    param(
+        [string] $Value
+    )
+
+    return [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($Value))
+}
+
 function Test-PosixFileModes {
     return [System.IO.Path]::DirectorySeparatorChar -eq '/'
 }
@@ -313,11 +321,24 @@ try {
     Assert-True ($html.Content.Contains('list_dir')) 'HTML response should mention list_dir.'
     Assert-True ($html.Content.Contains('delete_file')) 'HTML response should mention delete_file.'
     Assert-True ($html.Content.Contains('AI agent instructions')) 'HTML response should include AI-agent instructions.'
-    $userGuidanceIndex = $html.Content.IndexOf('User guidance')
-    $aiGuidanceIndex = $html.Content.IndexOf('AI agent guidance')
+    Assert-True ($html.Content.Contains((ConvertFrom-Utf8Base64 '44GT44Gu44OX44Ot44Oz44OX44OI44KSQUnjgqjjg7zjgrjjgqfjg7Pjg4jjgavmuKHjgZfjgabjgY/jgaDjgZXjgYQ='))) 'HTML response should include the user CTA.'
+    $expectedCopyPrompt = (ConvertFrom-Utf8Base64 '44GT44KM44KS5L2/44GE44Gf44GEIGA=') + $fileUrl + (ConvertFrom-Utf8Base64 'YA==')
+    Assert-True ($html.Content.Contains('<input id="cdo-agent-prompt" class="copy-input" type="text" readonly value="')) 'HTML response should include a readonly prompt input.'
+    Assert-True ($html.Content.Contains($expectedCopyPrompt)) 'HTML response should copy only the short agent prompt.'
+    Assert-True ($html.Content.Contains('data-copy-target="cdo-agent-prompt"')) 'HTML response should include a copy button for the prompt.'
+    Assert-True ($html.Content.Contains('<svg aria-hidden="true"')) 'HTML response should render the copy button as an icon button.'
+    Assert-True ($html.Content.Contains('navigator.clipboard.writeText')) 'HTML response should include clipboard copy JavaScript.'
+    Assert-True ($html.Content.Contains((ConvertFrom-Utf8Base64 '54++5Zyo44Gu54q25oWLOiDjgb7jgaDmib/oqo3jgZXjgozjgabjgYTjgb7jgZvjgpPjgII='))) 'HTML response should show the initial user-readable auth state.'
+    Assert-True ($html.Content.Contains((ConvertFrom-Utf8Base64 '6Kmz57Sw5oOF5aCx'))) 'HTML response should include collapsible detailed auth information.'
+    Assert-True ($html.Content.Contains((ConvertFrom-Utf8Base64 '5pyq6Kit5a6a'))) 'HTML response should display unset values in Japanese.'
+    Assert-True (-not $html.Content.Contains('not set')) 'HTML response should not display unset values as not set.'
+    $userGuidanceIndex = $html.Content.IndexOf((ConvertFrom-Utf8Base64 '5L2/44GE5pa5'))
+    $aiGuidanceIndex = $html.Content.IndexOf((ConvertFrom-Utf8Base64 'QUnjgqjjg7zjgrjjgqfjg7Pjg4jlkJHjgZHjga7mjqXntprmiYvpoIY='))
     Assert-True ($userGuidanceIndex -ge 0) 'HTML response should include a user-facing section.'
     Assert-True ($aiGuidanceIndex -gt $userGuidanceIndex) 'HTML response should place AI-agent guidance after the user-facing section.'
     Assert-True ($html.Content.Contains('MCP endpoint')) 'HTML response should include the MCP endpoint.'
+    Assert-True ($html.Content.Contains('Suggested prompt:')) 'HTML response should include the suggested prompt for agents.'
+    Assert-True ($html.Content.Contains('Use this exact URL as the MCP endpoint:')) 'HTML response should include exact endpoint instructions for agents.'
     Assert-True ($html.Content.Contains('tools/list')) 'HTML response should tell agents to call tools/list first.'
     Assert-True ($html.Content.Contains('server_status')) 'HTML response should tell agents to call server_status.'
     Assert-True ($html.Content.Contains('contextHint')) 'HTML response should explain contextHint usage.'
@@ -339,6 +360,11 @@ try {
     $directFile = Invoke-SmokeRequest -Url $fileUrl -Method 'GET'
     Assert-True ($directFile.StatusCode -eq 200) 'GET /cdo.php should return 200.'
     Assert-True ($directFile.Content.Contains('Chief-Deployment-Officer')) 'Direct entrypoint response should contain app name.'
+
+    $invalidApprovalNoState = Invoke-SmokeRequest -Url ($fileUrl + '?cdo_approve=invalid') -Method 'GET'
+    Assert-True ($invalidApprovalNoState.StatusCode -eq 404) 'Invalid approval links without auth state should return 404.'
+    Assert-True ($invalidApprovalNoState.Content.Contains('.cdo_auth.json')) 'Invalid approval links should explain how to reset auth.'
+    Assert-True (-not $invalidApprovalNoState.Content.Contains('Fatal error')) 'Invalid approval links without auth state should not cause PHP fatal errors.'
 
     $renamedHtml = Invoke-SmokeRequest -Url $renamedFileUrl -Method 'GET'
     Assert-True ($renamedHtml.StatusCode -eq 200) 'Renamed entrypoint should return 200.'
@@ -559,10 +585,11 @@ try {
         'Content-Type' = 'application/x-www-form-urlencoded'
     } -Body 'approve=yes'
     Assert-True ($approvalPost.StatusCode -eq 200) 'Approval POST should return 200.'
-    Assert-True ($approvalPost.Content.Contains('Approval Complete')) 'Approval POST should render the success page.'
+    Assert-True ($approvalPost.Content.Contains((ConvertFrom-Utf8Base64 '5om/6KqN5a6M5LqG'))) 'Approval POST should render the success page.'
     Assert-True ($approvalPost.Content.Contains('smoke-agent')) 'Approval success should show the approved agent name.'
+    Assert-True ($approvalPost.Content.Contains((ConvertFrom-Utf8Base64 '44Gn44GN44Gf'))) 'Approval success should tell the user what to report to the agent.'
     Assert-True ($approvalPost.Content.Contains($contextHint)) 'Approval success should show the context hint.'
-    Assert-True ($approvalPost.Content.Contains('approvedAt')) 'Approval success should show the approval timestamp.'
+    Assert-True ($approvalPost.Content.Contains('UTC')) 'Approval success should show the approval timestamp.'
     Assert-True (-not $approvalPost.Content.Contains($bearerToken)) 'Approval success should not expose the bearer token.'
     Assert-True (-not $approvalPost.Content.Contains($approvalSecret)) 'Approval success should not expose the approval secret.'
 
@@ -571,8 +598,8 @@ try {
     Assert-True ($htmlAfterApproval.Content.Contains('approved')) 'HTML response should report approved auth state after approval.'
     Assert-True ($htmlAfterApproval.Content.Contains('smoke-agent')) 'HTML response should show the approved agent name.'
     Assert-True ($htmlAfterApproval.Content.Contains($contextHint)) 'HTML response should show the context hint after approval.'
-    Assert-True ($htmlAfterApproval.Content.Contains('approvedAt')) 'HTML response should show approvedAt after approval.'
-    Assert-True ($htmlAfterApproval.Content.Contains('lastUsedAt')) 'HTML response should show lastUsedAt after approval.'
+    Assert-True ($htmlAfterApproval.Content.Contains((ConvertFrom-Utf8Base64 '5om/6KqN5pel5pmC'))) 'HTML response should show the approval timestamp after approval.'
+    Assert-True ($htmlAfterApproval.Content.Contains((ConvertFrom-Utf8Base64 '5pyA57WC5Yip55So5pel5pmC'))) 'HTML response should show the last-used timestamp after approval.'
     Assert-True (-not $htmlAfterApproval.Content.Contains($bearerToken)) 'HTML response should not expose the bearer token after approval.'
     Assert-True (-not $htmlAfterApproval.Content.Contains($approvalSecret)) 'HTML response should not expose the approval secret after approval.'
     Assert-True (-not $htmlAfterApproval.Content.Contains('tokenHashPrefix')) 'HTML response should not expose token hash prefixes after approval.'

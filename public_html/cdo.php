@@ -369,9 +369,41 @@ function cdo_public_time($value): ?string
     return gmdate('c', $timestamp);
 }
 
-function cdo_html_text(?string $value, string $fallback = 'not set'): string
+function cdo_public_display_time($value): ?string
+{
+    $timestamp = is_int($value) ? $value : (is_numeric($value) ? (int) $value : 0);
+
+    if ($timestamp <= 0 && is_string($value) && $value !== '') {
+        $parsed = strtotime($value);
+        $timestamp = $parsed === false ? 0 : $parsed;
+    }
+
+    if ($timestamp <= 0) {
+        return null;
+    }
+
+    return gmdate('Y-m-d H:i:s \U\T\C', $timestamp);
+}
+
+function cdo_html_text(?string $value, string $fallback = '未設定'): string
 {
     return htmlspecialchars($value ?? $fallback, ENT_QUOTES, 'UTF-8');
+}
+
+function cdo_auth_state_message(string $authState): string
+{
+    switch ($authState) {
+        case 'not_configured':
+            return 'まだ承認されていません。';
+        case 'pending':
+            return '承認待ちです。';
+        case 'approved':
+            return '承認済みです。';
+        case 'locked':
+            return '認証がロックされています。';
+        default:
+            return '状態を確認してください。';
+    }
 }
 
 function cdo_render_page(string $title, string $bodyHtml, int $statusCode = 200): void
@@ -422,6 +454,79 @@ function cdo_render_page(string $title, string $bodyHtml, int $statusCode = 200)
       background: rgba(30, 29, 26, 0.06);
       white-space: pre-wrap;
     }
+    textarea {
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 92px;
+      border: 1px solid rgba(30, 29, 26, 0.16);
+      border-radius: 12px;
+      padding: 14px;
+      background: rgba(255, 255, 255, 0.72);
+      color: inherit;
+      font: 0.95em Consolas, monospace;
+      resize: vertical;
+    }
+    .copy-control {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      margin-top: 12px;
+    }
+    .copy-input {
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 44px;
+      border: 1px solid rgba(30, 29, 26, 0.32);
+      border-radius: 8px;
+      padding: 10px 14px;
+      background: #101820;
+      color: #f7f8f8;
+      font: 0.95em Consolas, monospace;
+    }
+    .copy-button {
+      display: inline-grid;
+      place-items: center;
+      width: 36px;
+      height: 36px;
+      border: 0;
+      border-radius: 8px;
+      padding: 0;
+      background: transparent;
+      color: #1e1d1a;
+    }
+    .copy-button:hover,
+    .copy-button:focus-visible {
+      background: rgba(30, 29, 26, 0.08);
+    }
+    .copy-button svg {
+      display: block;
+      width: 23px;
+      height: 23px;
+    }
+    details {
+      border: 1px solid rgba(30, 29, 26, 0.12);
+      border-radius: 14px;
+      padding: 12px 14px;
+      margin: 18px 0;
+      background: rgba(255, 255, 255, 0.4);
+    }
+    summary {
+      cursor: pointer;
+      font-weight: 700;
+    }
+    .cta,
+    .status {
+      border-radius: 16px;
+      padding: 16px;
+      background: rgba(30, 29, 26, 0.06);
+      margin: 18px 0;
+    }
+    .copy-status {
+      min-height: 1.5em;
+      margin: 8px 0 0;
+      font-size: 0.9em;
+    }
     h2 {
       margin: 28px 0 12px;
     }
@@ -463,6 +568,28 @@ function cdo_render_page(string $title, string $bodyHtml, int $statusCode = 200)
       pre {
         background: rgba(244, 239, 231, 0.08);
       }
+      textarea {
+        border-color: rgba(244, 239, 231, 0.18);
+        background: rgba(244, 239, 231, 0.08);
+      }
+      .copy-input {
+        border-color: rgba(244, 239, 231, 0.4);
+        background: #0d141b;
+        color: #f7f8f8;
+      }
+      .copy-button {
+        color: #f4efe7;
+      }
+      .copy-button:hover,
+      .copy-button:focus-visible {
+        background: rgba(244, 239, 231, 0.12);
+      }
+      details,
+      .cta,
+      .status {
+        border-color: rgba(244, 239, 231, 0.12);
+        background: rgba(244, 239, 231, 0.06);
+      }
     }
   </style>
 </head>
@@ -487,17 +614,37 @@ function cdo_render_default_page(): void
     $endpoint = htmlspecialchars($endpointUrl, ENT_QUOTES, 'UTF-8');
     $appVersion = htmlspecialchars(CDO_APP_VERSION, ENT_QUOTES, 'UTF-8');
     $protocolVersion = htmlspecialchars(CDO_PROTOCOL_VERSION, ENT_QUOTES, 'UTF-8');
-    $authState = cdo_html_text((string) $auth['authState']);
-    $authorized = $auth['authorized'] ? 'true' : 'false';
+    $authStateRaw = (string) $auth['authState'];
+    $authState = cdo_html_text($authStateRaw);
+    $currentStatus = cdo_html_text(cdo_auth_state_message($authStateRaw));
     $authReason = cdo_html_text((string) $auth['authReason']);
     $agentName = cdo_html_text($auth['agentName']);
     $contextHint = cdo_html_text($auth['contextHint']);
-    $issuedAt = cdo_html_text($auth['issuedAt']);
-    $approvedAt = cdo_html_text($auth['approvedAt']);
-    $lastUsedAt = cdo_html_text($auth['lastUsedAt']);
-    $lockedAt = cdo_html_text($auth['lockedAt']);
-    $message = cdo_html_text($auth['message']);
-    $aiGuide = htmlspecialchars(<<<'TEXT'
+    $state = isset($authContext['state']) && is_array($authContext['state'])
+        ? $authContext['state']
+        : [];
+    $issuedAt = cdo_html_text(cdo_public_display_time($state['issuedAt'] ?? null));
+    $approvedAt = cdo_html_text(cdo_public_display_time($state['approvedAt'] ?? null));
+    $lastUsedAt = cdo_html_text(cdo_public_display_time($state['lastUsedAt'] ?? null));
+    $copyPromptText = "これを使いたい `{$endpointUrl}`";
+    $copyPrompt = htmlspecialchars($copyPromptText, ENT_QUOTES, 'UTF-8');
+    $suggestedPromptText = "I want to use this as an MCP endpoint:\n{$endpointUrl}";
+    $aiGuideText = <<<TEXT
+Chief Deployment Officer
+
+This URL is a Streamable HTTP MCP endpoint for AI agents.
+
+Chief Deployment Officer provides controlled file operations on this server after explicit user approval.
+
+Use this exact URL as the MCP endpoint:
+{$endpointUrl}
+
+Protected tools after approval:
+list_dir, read_file, write_file, create_dir, delete_file, delete_dir, rename_path
+
+Suggested prompt:
+{$suggestedPromptText}
+
 AI agent instructions for this endpoint:
 1. If the user gave you this URL, use this exact URL as the Streamable HTTP MCP endpoint.
 2. Do not replace this URL with /cdo.php, a repository path, or another guessed location.
@@ -512,55 +659,114 @@ AI agent instructions for this endpoint:
 11. If a write/delete/rename tool call timeout happens, Do not retry the same operation immediately.
 12. First call server_status, then use list_dir and read_file to verify the target state.
 13. If the change is already reflected, treat it as success. If not reflected, ask the user before running the operation again.
-TEXT, ENT_QUOTES, 'UTF-8');
+TEXT;
+    $aiGuide = htmlspecialchars($aiGuideText, ENT_QUOTES, 'UTF-8');
 
     $bodyHtml = <<<HTML
-<h1>Chief-Deployment-Officer</h1>
-<p>単一PHPファイルのMCPエンドポイントです。このブラウザ画面は、先にユーザー向け確認、次にAIエージェント向け接続手順を表示します。</p>
+<h1>Chief Deployment Officer</h1>
 
-<section aria-labelledby="user-guidance-heading">
-<h2 id="user-guidance-heading">User guidance / ユーザー向け</h2>
-<p>AIエージェントにこのページのURLを渡すと、エージェントはこのURLをMCP endpointとして使い、必要に応じて承認要求を作れます。</p>
+<section class="cta" aria-labelledby="copy-prompt-heading">
+<h2 id="copy-prompt-heading">このプロンプトをAIエージェントに渡してください。</h2>
+<div class="copy-control">
+  <input id="cdo-agent-prompt" class="copy-input" type="text" readonly value="{$copyPrompt}">
+  <button class="copy-button" type="button" data-copy-target="cdo-agent-prompt" data-copy-status="copy-prompt-status" aria-label="コピー" title="コピー">
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none">
+      <rect x="8" y="3" width="11" height="14" rx="2" stroke="currentColor" stroke-width="2"></rect>
+      <path d="M5 7H4a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-1" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+    </svg>
+  </button>
+</div>
+<p class="copy-status" id="copy-prompt-status" aria-live="polite"></p>
+</section>
+
+<section class="status" aria-labelledby="current-status-heading">
+<h2 id="current-status-heading">現在の状態</h2>
+<p>現在の状態: {$currentStatus}</p>
+</section>
+
+<details>
+<summary>詳細情報</summary>
 <ul>
-  <li>AIに渡すURL / MCP endpoint: <code>{$endpoint}</code></li>
-  <li>認証設定: <code>{$authState}</code></li>
-  <li>このリクエストは認証済み: <code>{$authorized}</code></li>
+  <li>認証状態: <code>{$authState}</code></li>
   <li>認証理由: <code>{$authReason}</code></li>
   <li>承認AI: <code>{$agentName}</code></li>
   <li>スレッド手がかり: <code>{$contextHint}</code></li>
-  <li>発行日時 issuedAt (UTC): <code>{$issuedAt}</code></li>
-  <li>承認日時 approvedAt (UTC): <code>{$approvedAt}</code></li>
-  <li>最終利用日時 lastUsedAt (UTC): <code>{$lastUsedAt}</code></li>
-  <li>ロック日時 lockedAt (UTC): <code>{$lockedAt}</code></li>
-  <li>メッセージ: <code>{$message}</code></li>
+  <li>発行日時: <code>{$issuedAt}</code></li>
+  <li>承認日時: <code>{$approvedAt}</code></li>
+  <li>最終利用日時: <code>{$lastUsedAt}</code></li>
 </ul>
-<p>承認済みの場合は、上の「承認AI」「スレッド手がかり」「承認日時」を使って、どのAIエージェント・対話スレッドに許可したかを探せます。</p>
-<p>不要になった認証は、認証状態ファイルを削除してから <code>request_auth</code> をやり直してください。</p>
+</details>
 
-<h3>危険操作の注意</h3>
+<section aria-labelledby="user-guidance-heading">
+<h2 id="user-guidance-heading">使い方</h2>
+<ol>
+  <li>AIエージェントに上記URLを渡します。</li>
+  <li>AIエージェントが承認用URLを表示します。</li>
+  <li>その承認用URLをブラウザで開き、内容を確認して承認します。</li>
+  <li>承認後、AIエージェントとの会話に戻って「承認しました」と伝えてください。</li>
+</ol>
+
+<h3>注意</h3>
 <ul>
-  <li><code>write_file</code>, <code>delete_file</code>, <code>delete_dir</code>, <code>rename_path</code> は承認済みエージェントだけが使えます。</li>
-  <li>書込・削除・リネーム前に、対象パスを <code>list_dir</code> / <code>read_file</code> で確認し、必要に応じてバックアップしてください。</li>
-  <li><code>confirm: true</code> は、ユーザーが対象と操作内容を確認した後だけ付けてください。</li>
+  <li>承認したAIエージェントは、このサーバー上のファイルを読み書きできるようになります。</li>
+  <li>削除・上書き・リネームなどの操作は、AIに内容を確認してから実行させてください。</li>
   <li>AIエージェントが応答待ちでtimeoutした場合でも、サーバー側では操作が反映済みの可能性があります。AIには即再実行ではなく状態確認をさせてください。</li>
 </ul>
 </section>
 
-<section aria-labelledby="ai-guidance-heading">
-<h2 id="ai-guidance-heading">AI agent guidance / AIエージェント向け</h2>
-<p>ユーザーがこのURLをAIエージェントに渡した場合は、このURL自体をMCP endpointとしてそのまま使ってください。ローカルリポジトリや別パスを推測してから始める必要はありません。</p>
+<details>
+<summary>AIエージェント向けの接続手順</summary>
+<p>以下はAIエージェント向けの手順です。</p>
 <pre><code>{$aiGuide}</code></pre>
+</details>
 
-<h3>Connection details</h3>
-<ul>
-  <li>エントリポイント: <code>{$entrypoint}</code></li>
-  <li>MCP endpoint: <code>{$endpoint}</code></li>
-  <li>アプリバージョン: <code>{$appVersion}</code></li>
-  <li>MCPプロトコル: <code>{$protocolVersion}</code></li>
-  <li>公開ツール: <code>server_status</code>, <code>request_auth</code></li>
-  <li>保護ツール: <code>list_dir</code>, <code>read_file</code>, <code>write_file</code>, <code>create_dir</code>, <code>delete_file</code>, <code>delete_dir</code>, <code>rename_path</code></li>
-</ul>
-</section>
+<script>
+(function () {
+  var buttons = document.querySelectorAll('[data-copy-target]');
+
+  function setStatus(element, message) {
+    if (element) {
+      element.textContent = message;
+    }
+  }
+
+  buttons.forEach(function (button) {
+    button.addEventListener('click', function () {
+      var target = document.getElementById(button.getAttribute('data-copy-target'));
+      var status = document.getElementById(button.getAttribute('data-copy-status'));
+
+      if (!target) {
+        return;
+      }
+
+      var text = target.value || target.textContent || '';
+      var fallbackCopy = function () {
+        target.focus();
+
+        if (typeof target.select === 'function') {
+          target.select();
+        }
+
+        try {
+          document.execCommand('copy');
+          setStatus(status, 'コピーしました。');
+        } catch (error) {
+          setStatus(status, 'コピーできませんでした。選択済みのテキストをコピーしてください。');
+        }
+      };
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () {
+          setStatus(status, 'コピーしました。');
+        }).catch(fallbackCopy);
+        return;
+      }
+
+      fallbackCopy();
+    });
+  });
+}());
+</script>
 HTML;
 
     cdo_render_page('Chief-Deployment-Officer', $bodyHtml);
@@ -1944,36 +2150,34 @@ function cdo_rename_path_payload(array $params): array
     ];
 }
 
-function cdo_render_invalid_approval_page(): void
+function cdo_render_invalid_approval_page(?array $state): void
 {
+    $state = $state ?? [];
+    $agentName = cdo_html_text(cdo_public_text($state['agentName'] ?? null));
+    $entrypointPath = cdo_get_entrypoint_path();
+    $entrypointHref = htmlspecialchars($entrypointPath, ENT_QUOTES, 'UTF-8');
+
     $bodyHtml = <<<HTML
-<h1>Approval Link Not Available</h1>
-<p>この承認リンクは無効か、すでに使用済みです。</p>
-<p><code>.cdo_auth.json</code> を削除したあとに、MCPクライアントから再度 <code>request_auth</code> を実行してください。</p>
+<h1>無効な承認リンク</h1>
+<p>この承認リンクは使用できません。<br>すでに使用済み、期限切れ、または別の承認リクエストで置き換えられた可能性があります。</p>
+<p>すでに承認した場合は、AIエージェント（{$agentName}）との会話に戻って「承認しました」と伝えてください。<br>まだ承認していない場合は、AIエージェントに承認リンクを再発行してもらってください。</p>
+<p>認証を取り消すには、<code>.cdo_auth.json</code> を削除してください。<a href="{$entrypointHref}">最初の手順</a>から再びやり直せるようになります。</p>
 HTML;
 
-    cdo_render_page('Approval Link Not Available', $bodyHtml, 404);
+    cdo_render_page('無効な承認リンク', $bodyHtml, 404);
 }
 
 function cdo_render_approval_page(array $state): void
 {
-    $agentName = isset($state['agentName']) && is_string($state['agentName']) && $state['agentName'] !== ''
-        ? htmlspecialchars((string) $state['agentName'], ENT_QUOTES, 'UTF-8')
-        : 'unknown-agent';
+    $agentName = cdo_html_text(cdo_public_text($state['agentName'] ?? null));
     $contextHint = cdo_html_text(cdo_public_text($state['contextHint'] ?? null));
     $issuedAt = cdo_html_text(cdo_public_time($state['issuedAt'] ?? null));
 
     $bodyHtml = <<<HTML
-<h1>MCP Approval</h1>
-<p>この画面は、ユーザーがAIエージェントへのアクセス許可を確認するための承認画面です。</p>
-<p>次のAIエージェントに、Chief-Deployment-Officer の保護ツール利用を許可します。</p>
-<ul>
-  <li>承認AI: <code>{$agentName}</code></li>
-  <li>スレッド手がかり: <code>{$contextHint}</code></li>
-  <li>発行日時 issuedAt (UTC): <code>{$issuedAt}</code></li>
-</ul>
-<p>心当たりがない場合や、対象の対話スレッドを確認できない場合は、この画面を閉じてください。</p>
-<p>承認すると、1エージェント専用の Bearer token が有効になります。この画面にtokenは表示しません。</p>
+<h1>承認</h1>
+<p>AIエージェント（{$agentName}）にこのサーバーの操作を許可します。</p>
+<p><code>{$contextHint}</code></p>
+<p><code>{$issuedAt}</code></p>
 <form method="post">
   <button type="submit" name="approve" value="yes">承認する</button>
 </form>
@@ -1986,19 +2190,17 @@ function cdo_render_approval_success_page(array $state): void
 {
     $agentName = cdo_html_text(cdo_public_text($state['agentName'] ?? null));
     $contextHint = cdo_html_text(cdo_public_text($state['contextHint'] ?? null));
-    $approvedAt = cdo_html_text(cdo_public_time($state['approvedAt'] ?? null));
+    $approvedAt = cdo_html_text(cdo_public_display_time($state['approvedAt'] ?? null));
 
     $bodyHtml = <<<HTML
-<h1>Approval Complete</h1>
-<p>この画面は、ユーザー向けの承認完了画面です。</p>
-<p>AIエージェント用の Bearer token を有効化しました。</p>
-<p>承認AI: <code>{$agentName}</code></p>
-<p>スレッド手がかり: <code>{$contextHint}</code></p>
-<p>承認日時 approvedAt (UTC): <code>{$approvedAt}</code></p>
-<p>この画面にtokenは表示しません。元のAIエージェントとの対話に戻り、承認が完了したことを伝えてください。</p>
+<h1>承認完了</h1>
+<p>AIエージェントがこのサーバーを操作できるようになりました。</p>
+<p>AIエージェント（{$agentName}）に「できた」と伝えてください。</p>
+<p><code>{$contextHint}</code></p>
+<p><code>{$approvedAt}</code></p>
 HTML;
 
-    cdo_render_page('Approval Complete', $bodyHtml);
+    cdo_render_page('承認完了', $bodyHtml);
 }
 
 function cdo_handle_approval_request(): bool
@@ -2012,12 +2214,12 @@ function cdo_handle_approval_request(): bool
     $secret = (string) $_GET[CDO_APPROVAL_QUERY_KEY];
 
     if ($state === null || ($state['state'] ?? null) !== 'pending') {
-        cdo_render_invalid_approval_page();
+        cdo_render_invalid_approval_page($state);
         return true;
     }
 
     if (!hash_equals((string) $state['approvalSecret'], $secret)) {
-        cdo_render_invalid_approval_page();
+        cdo_render_invalid_approval_page($state);
         return true;
     }
 
