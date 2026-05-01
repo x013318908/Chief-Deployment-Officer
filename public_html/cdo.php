@@ -12,11 +12,16 @@ const CDO_SUPPORTED_PROTOCOL_VERSIONS = [
     '2025-03-26',
 ];
 const CDO_AUTH_FILE_NAME = '.cdo_auth.json';
+const CDO_ENV_FILE_NAME = '.cdo_env.json';
 const CDO_DEBUG_LOG_FILE_NAME = '.cdo_debug.log';
 const CDO_APPROVAL_QUERY_KEY = 'cdo_approve';
+const CDO_ENV_UPLOAD_QUERY_KEY = 'cdo_env_upload';
 const CDO_AUTH_IDLE_SECONDS = 2592000;
 const CDO_INTERNAL_FILE_PREFIX = '.cdo_';
 const CDO_MAX_READ_FILE_BYTES = 1048576;
+const CDO_ENV_UPLOAD_EXPIRES_SECONDS = 600;
+const CDO_ENV_UPLOAD_MAX_BYTES = 262144;
+const CDO_ENV_TARGET_FILE_NAME = 'production.env';
 
 function cdo_send_json(int $statusCode, array $payload, array $headers = []): void
 {
@@ -223,6 +228,17 @@ function cdo_auth_state_path(): string
     return cdo_app_root() . DIRECTORY_SEPARATOR . CDO_AUTH_FILE_NAME;
 }
 
+function cdo_env_state_path(): string
+{
+    $override = getenv('CDO_ENV_STATE_PATH');
+
+    if (is_string($override) && trim($override) !== '') {
+        return $override;
+    }
+
+    return cdo_app_root() . DIRECTORY_SEPARATOR . CDO_ENV_FILE_NAME;
+}
+
 function cdo_debug_log_path(): string
 {
     $override = getenv('CDO_DEBUG_LOG_PATH');
@@ -333,6 +349,18 @@ function cdo_build_approval_url(string $secret): string
     );
 }
 
+function cdo_build_env_upload_url(string $secret): string
+{
+    return sprintf(
+        '%s://%s%s?%s=%s',
+        cdo_get_request_scheme(),
+        cdo_request_host(),
+        cdo_get_entrypoint_path(),
+        CDO_ENV_UPLOAD_QUERY_KEY,
+        rawurlencode($secret)
+    );
+}
+
 function cdo_build_public_url(string $path): string
 {
     if ($path === '' || $path[0] !== '/') {
@@ -434,6 +462,8 @@ function cdo_agent_guide_payload(string $endpointUrl): array
             'delete_file',
             'delete_dir',
             'rename_path',
+            'get_env_path',
+            'request_env_upload',
         ],
         'operationRules' => [
             'The root is the directory that contains this endpoint file.',
@@ -443,6 +473,9 @@ function cdo_agent_guide_payload(string $endpointUrl): array
             'write_file requires overwrite:true for existing files, preserves existing permissions on overwrite, and uses the server umask for new files.',
             'delete_file and delete_dir require confirm:true. delete_dir only removes empty directories; recursive delete is not implemented.',
             'rename_path requires confirm:true and never replaces an existing destination. Rename overwrite/replace is not implemented.',
+            'CDO does not permanently set operating system environment variables. Use get_env_path to obtain the production env file path, then update the application code to read that path.',
+            'request_env_upload returns a one-time browser URL for a human user to upload an env file. The AI agent must not upload, read, download, inspect, or ask the user to paste env contents.',
+            'The env file is placed outside the document root when available. If no safe outside-document-root path is available, use the hosting provider environment variables or Secrets settings instead.',
         ],
         'timeoutHandling' => [
             'If a write/delete/rename tool call times out, Do not retry the same operation immediately.',
@@ -926,6 +959,277 @@ function cdo_save_auth_state(array $state): void
         json_encode($state, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT),
         LOCK_EX
     );
+}
+
+function cdo_load_env_state(): array
+{
+    $path = cdo_env_state_path();
+
+    if (!is_file($path)) {
+        return [
+            'version' => 1,
+            'envPath' => null,
+            'uploadedAt' => null,
+            'pendingUpload' => null,
+        ];
+    }
+
+    $raw = @file_get_contents($path);
+
+    if (!is_string($raw) || $raw === '') {
+        return [
+            'version' => 1,
+            'envPath' => null,
+            'uploadedAt' => null,
+            'pendingUpload' => null,
+        ];
+    }
+
+    try {
+        $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+    } catch (JsonException $exception) {
+        return [
+            'version' => 1,
+            'envPath' => null,
+            'uploadedAt' => null,
+            'pendingUpload' => null,
+        ];
+    }
+
+    if (!is_array($decoded)) {
+        $decoded = [];
+    }
+
+    $state = array_merge([
+        'version' => 1,
+        'envPath' => null,
+        'uploadedAt' => null,
+        'pendingUpload' => null,
+    ], $decoded);
+
+    if (!is_string($state['envPath']) || trim($state['envPath']) === '') {
+        $state['envPath'] = null;
+    }
+
+    if (!is_int($state['uploadedAt']) && !is_numeric($state['uploadedAt'])) {
+        $state['uploadedAt'] = null;
+    }
+
+    if (!is_array($state['pendingUpload'])) {
+        $state['pendingUpload'] = null;
+    }
+
+    return $state;
+}
+
+function cdo_save_env_state(array $state): void
+{
+    $state['version'] = 1;
+
+    file_put_contents(
+        cdo_env_state_path(),
+        json_encode($state, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT),
+        LOCK_EX
+    );
+}
+
+function cdo_normalized_absolute_path(string $path): string
+{
+    $path = str_replace('\\', '/', $path);
+
+    return rtrim($path, '/');
+}
+
+function cdo_path_is_under_root(string $path, string $root): bool
+{
+    $path = cdo_normalized_absolute_path($path);
+    $root = cdo_normalized_absolute_path($root);
+
+    if (cdo_is_windows_environment()) {
+        $path = strtolower($path);
+        $root = strtolower($root);
+    }
+
+    return $path === $root || strpos($path, $root . '/') === 0;
+}
+
+function cdo_document_root_path(): ?string
+{
+    $documentRoot = $_SERVER['DOCUMENT_ROOT'] ?? null;
+
+    if (!is_string($documentRoot) || trim($documentRoot) === '') {
+        return null;
+    }
+
+    $realpath = realpath($documentRoot);
+
+    return is_string($realpath) ? $realpath : null;
+}
+
+function cdo_env_app_root_hash(): string
+{
+    $root = realpath(cdo_app_root());
+
+    if (!is_string($root)) {
+        $root = cdo_app_root();
+    }
+
+    return substr(hash('sha256', cdo_normalized_absolute_path($root)), 0, 16);
+}
+
+function cdo_computed_env_path(): ?string
+{
+    $documentRoot = cdo_document_root_path();
+
+    if ($documentRoot === null) {
+        return null;
+    }
+
+    return dirname($documentRoot)
+        . DIRECTORY_SEPARATOR
+        . '.cdo-secrets'
+        . DIRECTORY_SEPARATOR
+        . cdo_env_app_root_hash()
+        . DIRECTORY_SEPARATOR
+        . CDO_ENV_TARGET_FILE_NAME;
+}
+
+function cdo_env_path_is_outside_document_root(string $envPath): bool
+{
+    $documentRoot = cdo_document_root_path();
+
+    if ($documentRoot === null) {
+        return false;
+    }
+
+    return !cdo_path_is_under_root($envPath, $documentRoot);
+}
+
+function cdo_existing_env_ancestor_path(string $envPath): ?string
+{
+    $candidate = dirname($envPath);
+
+    while (!file_exists($candidate)) {
+        $parent = dirname($candidate);
+
+        if ($parent === $candidate) {
+            return null;
+        }
+
+        $candidate = $parent;
+    }
+
+    return is_dir($candidate) ? $candidate : null;
+}
+
+function cdo_env_path_status(?string $envPath, ?int $uploadedAt = null): array
+{
+    $documentRoot = cdo_document_root_path();
+
+    if ($documentRoot === null) {
+        return [
+            'envPath' => null,
+            'available' => false,
+            'uploaded' => $uploadedAt !== null,
+            'uploadedAt' => cdo_public_time($uploadedAt),
+            'outsideDocumentRoot' => false,
+            'readableByPhp' => false,
+            'writable' => false,
+            'reason' => 'document_root_unavailable',
+        ];
+    }
+
+    if ($envPath === null || trim($envPath) === '') {
+        return [
+            'envPath' => null,
+            'available' => false,
+            'uploaded' => $uploadedAt !== null,
+            'uploadedAt' => cdo_public_time($uploadedAt),
+            'outsideDocumentRoot' => false,
+            'readableByPhp' => false,
+            'writable' => false,
+            'reason' => 'env_path_unavailable',
+        ];
+    }
+
+    $outsideDocumentRoot = cdo_env_path_is_outside_document_root($envPath);
+    $directory = dirname($envPath);
+    $ancestor = cdo_existing_env_ancestor_path($envPath);
+    $writable = is_dir($directory) ? is_writable($directory) : ($ancestor !== null && is_writable($ancestor));
+    $readableByPhp = is_file($envPath) ? is_readable($envPath) : ($ancestor !== null && is_readable($ancestor));
+    $reason = 'ready';
+
+    if (!$outsideDocumentRoot) {
+        $reason = 'inside_document_root';
+    } elseif (!$writable) {
+        $reason = 'env_directory_not_writable';
+    } elseif (!$readableByPhp) {
+        $reason = 'env_path_not_readable_by_php';
+    }
+
+    return [
+        'envPath' => $envPath,
+        'available' => $outsideDocumentRoot && $writable && $readableByPhp,
+        'uploaded' => $uploadedAt !== null,
+        'uploadedAt' => cdo_public_time($uploadedAt),
+        'outsideDocumentRoot' => $outsideDocumentRoot,
+        'readableByPhp' => $readableByPhp,
+        'writable' => $writable,
+        'reason' => $reason,
+    ];
+}
+
+function cdo_env_path_payload(): array
+{
+    $state = cdo_load_env_state();
+    $uploadedAt = isset($state['uploadedAt']) && is_numeric($state['uploadedAt'])
+        ? (int) $state['uploadedAt']
+        : null;
+    $configuredEnvPath = is_string($state['envPath'] ?? null) ? trim((string) $state['envPath']) : '';
+    $envPath = $configuredEnvPath !== '' ? $configuredEnvPath : cdo_computed_env_path();
+
+    return cdo_env_path_status($envPath, $uploadedAt);
+}
+
+function cdo_request_env_upload_payload(): array
+{
+    $payload = cdo_env_path_payload();
+
+    if (!$payload['available'] || !is_string($payload['envPath']) || $payload['envPath'] === '') {
+        return [
+            'status' => 'unavailable',
+            'message' => 'CDO could not find a writable secrets path outside the document root. Use your hosting provider environment variables or Secrets settings instead.',
+            'uploadUrl' => null,
+            'envPath' => $payload['envPath'],
+            'expiresAt' => null,
+            'expiresInSeconds' => null,
+            'available' => false,
+            'reason' => $payload['reason'],
+        ];
+    }
+
+    $secret = cdo_generate_secret();
+    $issuedAt = cdo_now();
+    $expiresAt = $issuedAt + CDO_ENV_UPLOAD_EXPIRES_SECONDS;
+    $state = cdo_load_env_state();
+    $state['pendingUpload'] = [
+        'tokenHash' => cdo_hash_secret($secret),
+        'envPath' => $payload['envPath'],
+        'issuedAt' => $issuedAt,
+        'expiresAt' => $expiresAt,
+    ];
+    cdo_save_env_state($state);
+
+    return [
+        'status' => 'pending_upload',
+        'message' => 'Give uploadUrl to the user. The browser upload link is valid once for 10 minutes. The agent cannot read, upload, download, or inspect env contents.',
+        'uploadUrl' => cdo_build_env_upload_url($secret),
+        'envPath' => $payload['envPath'],
+        'expiresAt' => cdo_public_time($expiresAt),
+        'expiresInSeconds' => CDO_ENV_UPLOAD_EXPIRES_SECONDS,
+        'available' => true,
+        'reason' => $payload['reason'],
+    ];
 }
 
 function cdo_refresh_auth_state(?array $state): ?array
@@ -1473,6 +1777,80 @@ function cdo_get_rename_path_tool(): array
     ];
 }
 
+function cdo_get_env_path_tool(): array
+{
+    return [
+        'name' => 'get_env_path',
+        'title' => 'Get Env Path',
+        'description' => 'Return the single production env file path chosen by CDO. This returns only path and safety metadata, never env contents, key names, or values.',
+        'inputSchema' => [
+            'type' => 'object',
+            'properties' => new stdClass(),
+            'required' => [],
+        ],
+        'outputSchema' => [
+            'type' => 'object',
+            'properties' => [
+                'envPath' => ['type' => ['string', 'null']],
+                'available' => ['type' => 'boolean'],
+                'uploaded' => ['type' => 'boolean'],
+                'uploadedAt' => ['type' => ['string', 'null']],
+                'outsideDocumentRoot' => ['type' => 'boolean'],
+                'readableByPhp' => ['type' => 'boolean'],
+                'writable' => ['type' => 'boolean'],
+                'reason' => ['type' => 'string'],
+            ],
+            'required' => [
+                'envPath',
+                'available',
+                'uploaded',
+                'uploadedAt',
+                'outsideDocumentRoot',
+                'readableByPhp',
+                'writable',
+                'reason',
+            ],
+        ],
+    ];
+}
+
+function cdo_get_request_env_upload_tool(): array
+{
+    return [
+        'name' => 'request_env_upload',
+        'title' => 'Request Env Upload',
+        'description' => 'Generate a one-time browser upload link for replacing the production env file. The agent cannot upload, read, download, or inspect env contents.',
+        'inputSchema' => [
+            'type' => 'object',
+            'properties' => new stdClass(),
+            'required' => [],
+        ],
+        'outputSchema' => [
+            'type' => 'object',
+            'properties' => [
+                'status' => ['type' => 'string'],
+                'message' => ['type' => 'string'],
+                'uploadUrl' => ['type' => ['string', 'null']],
+                'envPath' => ['type' => ['string', 'null']],
+                'expiresAt' => ['type' => ['string', 'null']],
+                'expiresInSeconds' => ['type' => ['integer', 'null']],
+                'available' => ['type' => 'boolean'],
+                'reason' => ['type' => 'string'],
+            ],
+            'required' => [
+                'status',
+                'message',
+                'uploadUrl',
+                'envPath',
+                'expiresAt',
+                'expiresInSeconds',
+                'available',
+                'reason',
+            ],
+        ],
+    ];
+}
+
 function cdo_get_tools(array $authContext): array
 {
     $tools = cdo_get_public_tools();
@@ -1485,6 +1863,8 @@ function cdo_get_tools(array $authContext): array
         $tools[] = cdo_get_delete_file_tool();
         $tools[] = cdo_get_delete_dir_tool();
         $tools[] = cdo_get_rename_path_tool();
+        $tools[] = cdo_get_env_path_tool();
+        $tools[] = cdo_get_request_env_upload_tool();
     }
 
     return $tools;
@@ -2365,6 +2745,248 @@ function cdo_handle_approval_request(): bool
     return true;
 }
 
+function cdo_env_upload_token_context(string $secret): array
+{
+    $state = cdo_load_env_state();
+    $pending = $state['pendingUpload'] ?? null;
+
+    if (!is_array($pending)
+        || !isset($pending['tokenHash'], $pending['envPath'], $pending['expiresAt'])
+        || !is_string($pending['tokenHash'])
+        || !is_string($pending['envPath'])
+        || !is_numeric($pending['expiresAt'])) {
+        return [
+            'valid' => false,
+            'state' => $state,
+            'pending' => null,
+            'reason' => 'invalid_or_used_upload_token',
+            'message' => 'このアップロードURLは無効、または使用済みです。',
+        ];
+    }
+
+    if ((int) $pending['expiresAt'] < cdo_now()) {
+        $state['pendingUpload'] = null;
+        cdo_save_env_state($state);
+
+        return [
+            'valid' => false,
+            'state' => $state,
+            'pending' => null,
+            'reason' => 'expired_upload_token',
+            'message' => 'このアップロードURLは期限切れです。AIエージェントに新しいURLを発行してもらってください。',
+        ];
+    }
+
+    if (!hash_equals($pending['tokenHash'], cdo_hash_secret($secret))) {
+        return [
+            'valid' => false,
+            'state' => $state,
+            'pending' => null,
+            'reason' => 'invalid_upload_token',
+            'message' => 'このアップロードURLは無効です。',
+        ];
+    }
+
+    $pathStatus = cdo_env_path_status($pending['envPath'], null);
+
+    if (!$pathStatus['available']) {
+        return [
+            'valid' => false,
+            'state' => $state,
+            'pending' => $pending,
+            'reason' => $pathStatus['reason'],
+            'message' => '安全なenv配置先を利用できません。ホスティング会社の環境変数またはSecrets設定を使ってください。',
+        ];
+    }
+
+    return [
+        'valid' => true,
+        'state' => $state,
+        'pending' => $pending,
+        'reason' => 'ready',
+        'message' => 'ready',
+    ];
+}
+
+function cdo_render_env_upload_invalid_page(string $message, int $statusCode = 403): void
+{
+    $message = cdo_html_text($message);
+    $bodyHtml = <<<HTML
+<h1>.env アップロード</h1>
+<p>{$message}</p>
+<p>AIエージェントとの会話に戻り、必要なら新しいアップロードURLを発行してもらってください。</p>
+HTML;
+
+    cdo_render_page('.env アップロード', $bodyHtml, $statusCode);
+}
+
+function cdo_render_env_upload_form(string $envPath, ?string $error = null): void
+{
+    $envPathHtml = cdo_html_text($envPath);
+    $maxBytes = number_format(CDO_ENV_UPLOAD_MAX_BYTES);
+    $errorHtml = $error === null ? '' : '<p class="status error">' . cdo_html_text($error) . '</p>';
+    $action = cdo_html_text(cdo_get_entrypoint_path() . '?' . CDO_ENV_UPLOAD_QUERY_KEY . '=' . rawurlencode((string) $_GET[CDO_ENV_UPLOAD_QUERY_KEY]));
+
+    $bodyHtml = <<<HTML
+<h1>.env をアップロード</h1>
+<p>この画面では、アプリケーション用のenvファイルを1回だけアップロードできます。</p>
+<p>ファイル名は <code>.env</code> でなくてもかまいません。アップロードされた内容は、サーバー上で <code>production.env</code> として保存されます。</p>
+<p>保存先: <code>{$envPathHtml}</code></p>
+<p>アップロード後、CDOはenvの内容を再表示しません。MCPエージェントも内容、キー名、値、ダウンロードURLを取得できません。</p>
+<p>既存のenvファイルはこの内容で置き換えられます。バックアップは作成しません。</p>
+<p>最大サイズ: {$maxBytes} bytes。NULL byteを含むファイルは拒否されます。</p>
+{$errorHtml}
+<form method="post" enctype="multipart/form-data" action="{$action}">
+  <p><input type="file" name="envFile" required></p>
+  <p><button type="submit">production.env として保存</button></p>
+</form>
+HTML;
+
+    cdo_render_page('.env をアップロード', $bodyHtml);
+}
+
+function cdo_render_env_upload_success_page(string $envPath, int $uploadedAt): void
+{
+    $envPathHtml = cdo_html_text($envPath);
+    $uploadedAtHtml = cdo_html_text(cdo_public_display_time($uploadedAt));
+    $bodyHtml = <<<HTML
+<h1>.env アップロード完了</h1>
+<p>envファイルを <code>production.env</code> として保存しました。</p>
+<p>AIエージェントとの会話に戻って「アップロードしました」と伝えてください。</p>
+<p>保存先: <code>{$envPathHtml}</code></p>
+<p>アップロード日時: <code>{$uploadedAtHtml}</code></p>
+<p>CDOはenvの内容を表示・ダウンロード・MCP経由で公開しません。</p>
+HTML;
+
+    cdo_render_page('.env アップロード完了', $bodyHtml);
+}
+
+function cdo_write_uploaded_env_file(string $envPath, string $content): void
+{
+    $directory = dirname($envPath);
+
+    if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) {
+        throw new RuntimeException('Failed to create env storage directory.');
+    }
+
+    if (!is_writable($directory)) {
+        throw new RuntimeException('Env storage directory is not writable.');
+    }
+
+    $temporaryPath = tempnam($directory, '.cdo-env-');
+
+    if (!is_string($temporaryPath) || $temporaryPath === '') {
+        throw new RuntimeException('Failed to create temporary env file.');
+    }
+
+    try {
+        $bytesWritten = file_put_contents($temporaryPath, $content, LOCK_EX);
+
+        if ($bytesWritten === false || $bytesWritten !== strlen($content)) {
+            throw new RuntimeException('Failed to write temporary env file.');
+        }
+
+        cdo_apply_file_mode($temporaryPath, 0600);
+
+        if (!rename($temporaryPath, $envPath)) {
+            throw new RuntimeException('Failed to replace env file atomically.');
+        }
+    } catch (Throwable $exception) {
+        if (is_file($temporaryPath)) {
+            @unlink($temporaryPath);
+        }
+
+        throw $exception;
+    }
+}
+
+function cdo_handle_env_upload_request(): bool
+{
+    if (!isset($_GET[CDO_ENV_UPLOAD_QUERY_KEY]) || !is_string($_GET[CDO_ENV_UPLOAD_QUERY_KEY])) {
+        return false;
+    }
+
+    $secret = (string) $_GET[CDO_ENV_UPLOAD_QUERY_KEY];
+    $context = cdo_env_upload_token_context($secret);
+
+    if (!$context['valid']) {
+        cdo_render_env_upload_invalid_page((string) $context['message']);
+        return true;
+    }
+
+    $pending = $context['pending'];
+    $envPath = (string) $pending['envPath'];
+    $method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+
+    if ($method === 'GET') {
+        cdo_render_env_upload_form($envPath);
+        return true;
+    }
+
+    if ($method !== 'POST') {
+        cdo_send_empty(405, ['Allow' => 'GET, POST']);
+        return true;
+    }
+
+    $file = $_FILES['envFile'] ?? null;
+
+    if (!is_array($file) || !isset($file['error'], $file['tmp_name'], $file['size'])) {
+        cdo_render_env_upload_form($envPath, 'アップロードするファイルを選択してください。');
+        return true;
+    }
+
+    if ((int) $file['error'] !== UPLOAD_ERR_OK) {
+        cdo_render_env_upload_form($envPath, 'ファイルのアップロードに失敗しました。');
+        return true;
+    }
+
+    if ((int) $file['size'] > CDO_ENV_UPLOAD_MAX_BYTES) {
+        cdo_render_env_upload_form($envPath, 'ファイルサイズが大きすぎます。');
+        return true;
+    }
+
+    $temporaryUploadPath = (string) $file['tmp_name'];
+    $content = @file_get_contents($temporaryUploadPath);
+
+    if (!is_string($content)) {
+        cdo_render_env_upload_form($envPath, 'アップロードされたファイルを読み取れませんでした。');
+        return true;
+    }
+
+    if (strlen($content) > CDO_ENV_UPLOAD_MAX_BYTES) {
+        cdo_render_env_upload_form($envPath, 'ファイルサイズが大きすぎます。');
+        return true;
+    }
+
+    if (strpos($content, "\0") !== false) {
+        cdo_render_env_upload_form($envPath, 'NULL byteを含むファイルはアップロードできません。');
+        return true;
+    }
+
+    $pathStatus = cdo_env_path_status($envPath, null);
+
+    if (!$pathStatus['available']) {
+        cdo_render_env_upload_form($envPath, '安全なenv配置先を利用できません。ホスティング会社の環境変数またはSecrets設定を使ってください。');
+        return true;
+    }
+
+    try {
+        cdo_write_uploaded_env_file($envPath, $content);
+    } catch (RuntimeException $exception) {
+        cdo_render_env_upload_form($envPath, $exception->getMessage());
+        return true;
+    }
+
+    $state = $context['state'];
+    $uploadedAt = cdo_now();
+    $state['envPath'] = $envPath;
+    $state['uploadedAt'] = $uploadedAt;
+    $state['pendingUpload'] = null;
+    cdo_save_env_state($state);
+    cdo_render_env_upload_success_page($envPath, $uploadedAt);
+    return true;
+}
+
 function cdo_parse_json_message(): ?array
 {
     $body = trim(cdo_get_request_body());
@@ -2517,6 +3139,57 @@ function cdo_handle_request(array $message): void
 
             if ($toolName === 'request_auth') {
                 $payload = cdo_request_auth_payload($authContext, $arguments);
+                cdo_jsonrpc_result($id, cdo_tool_result($payload['message'], $payload), 200, [
+                    'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                ]);
+                return;
+            }
+
+            if ($toolName === 'get_env_path') {
+                if (!$authContext['isAuthorized']) {
+                    $message = 'Authentication required. Use request_auth and then send Authorization: Bearer <token> or X-CDO-Bearer-Token: <token>.';
+
+                    if (($authContext['state']['state'] ?? null) === 'locked') {
+                        $message = (string) ($authContext['state']['message'] ?? 'Authentication is locked.');
+                    }
+
+                    cdo_jsonrpc_error($id, -32001, $message, 200, [
+                        'reason' => $authContext['reason'],
+                    ], [
+                        'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                    ]);
+                    return;
+                }
+
+                $payload = cdo_env_path_payload();
+                cdo_jsonrpc_result($id, cdo_tool_result(
+                    $payload['available']
+                        ? 'Production env path is available outside the document root.'
+                        : 'Production env path is not available. Use hosting provider environment variables or Secrets settings.',
+                    $payload
+                ), 200, [
+                    'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                ]);
+                return;
+            }
+
+            if ($toolName === 'request_env_upload') {
+                if (!$authContext['isAuthorized']) {
+                    $message = 'Authentication required. Use request_auth and then send Authorization: Bearer <token> or X-CDO-Bearer-Token: <token>.';
+
+                    if (($authContext['state']['state'] ?? null) === 'locked') {
+                        $message = (string) ($authContext['state']['message'] ?? 'Authentication is locked.');
+                    }
+
+                    cdo_jsonrpc_error($id, -32001, $message, 200, [
+                        'reason' => $authContext['reason'],
+                    ], [
+                        'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                    ]);
+                    return;
+                }
+
+                $payload = cdo_request_env_upload_payload();
                 cdo_jsonrpc_result($id, cdo_tool_result($payload['message'], $payload), 200, [
                     'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
                 ]);
@@ -2786,6 +3459,10 @@ function cdo_handle_http_request(): void
     }
 
     if (cdo_handle_approval_request()) {
+        return;
+    }
+
+    if (cdo_handle_env_upload_request()) {
         return;
     }
 

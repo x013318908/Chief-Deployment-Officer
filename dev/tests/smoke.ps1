@@ -166,6 +166,37 @@ function Invoke-SmokeRequest {
     }
 }
 
+function Invoke-MultipartFileUpload {
+    param(
+        [string] $Url,
+        [string] $FilePath,
+        [string] $FieldName = 'envFile'
+    )
+
+    Add-Type -AssemblyName System.Net.Http
+
+    $client = [System.Net.Http.HttpClient]::new()
+    $content = [System.Net.Http.MultipartFormDataContent]::new()
+
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($FilePath)
+        $fileContent = [System.Net.Http.ByteArrayContent]::new($bytes)
+        $fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse('text/plain')
+        $content.Add($fileContent, $FieldName, [System.IO.Path]::GetFileName($FilePath))
+        $response = $client.PostAsync($Url, $content).GetAwaiter().GetResult()
+        $responseContent = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+
+        return [pscustomobject]@{
+            StatusCode = [int] $response.StatusCode
+            Content = [string] $responseContent
+            Headers = $response.Headers
+        }
+    } finally {
+        $content.Dispose()
+        $client.Dispose()
+    }
+}
+
 function Invoke-JsonRpcTool {
     param(
         [string] $Url,
@@ -228,7 +259,10 @@ $entrypoint = Join-Path $repoRoot 'public_html\cdo.php'
 $router = Join-Path $repoRoot 'dev\server\router.php'
 $tmpDir = Join-Path $repoRoot 'dev\tests\tmp'
 $authFile = Join-Path $tmpDir 'smoke-auth.json'
+$envStateFile = Join-Path $tmpDir 'smoke-env.json'
 $debugLog = Join-Path $tmpDir 'smoke-debug.log'
+$envSecretsRoot = Join-Path $repoRoot '.cdo-secrets'
+$envUploadFile = Join-Path $tmpDir 'smoke-production-env.txt'
 $renamedEntrypoint = Join-Path $repoRoot 'public_html\chief-smoke.php'
 $subdirEntrypointDir = Join-Path $repoRoot 'public_html\agent-smoke'
 $subdirEntrypoint = Join-Path $subdirEntrypointDir 'cdo.php'
@@ -259,7 +293,9 @@ Assert-True (Test-Path $router) "Missing router: $router"
 
 New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
 Remove-IfExists $authFile
+Remove-IfExists $envStateFile
 Remove-IfExists $debugLog
+Remove-IfExists $envSecretsRoot
 Remove-IfExists $renamedEntrypoint
 Remove-IfExists $subdirEntrypointDir
 Remove-IfExists $visibleDotFile
@@ -292,8 +328,10 @@ Set-Content -Path $renameDirFile -Value 'rename-dir-file'
 Set-Content -Path $renameExistingDestination -Value 'existing'
 
 $previousAuthPath = $env:CDO_AUTH_STATE_PATH
+$previousEnvPath = $env:CDO_ENV_STATE_PATH
 $previousDebugPath = $env:CDO_DEBUG_LOG_PATH
 $env:CDO_AUTH_STATE_PATH = $authFile
+$env:CDO_ENV_STATE_PATH = $envStateFile
 $env:CDO_DEBUG_LOG_PATH = $debugLog
 
 $port = Get-FreePort
@@ -491,6 +529,8 @@ try {
     Assert-True (-not ($toolNames -contains 'delete_file')) 'tools/list should not expose delete_file before auth.'
     Assert-True (-not ($toolNames -contains 'delete_dir')) 'tools/list should not expose delete_dir before auth.'
     Assert-True (-not ($toolNames -contains 'rename_path')) 'tools/list should not expose rename_path before auth.'
+    Assert-True (-not ($toolNames -contains 'get_env_path')) 'tools/list should not expose get_env_path before auth.'
+    Assert-True (-not ($toolNames -contains 'request_env_upload')) 'tools/list should not expose request_env_upload before auth.'
 
     $unauthorizedListDir = Invoke-JsonRpcTool -Url $mcpUrl -Id 4 -ToolName 'list_dir'
     Assert-True ($unauthorizedListDir.StatusCode -eq 200) 'Unauthorized list_dir should still return JSON-RPC.'
@@ -545,6 +585,16 @@ try {
     $unauthorizedRenamePathJson = $unauthorizedRenamePath.Content | ConvertFrom-Json
     Assert-True ($unauthorizedRenamePathJson.error.code -eq -32001) 'Unauthorized rename_path should return an auth error.'
 
+    $unauthorizedGetEnvPath = Invoke-JsonRpcTool -Url $mcpUrl -Id 118 -ToolName 'get_env_path'
+    Assert-True ($unauthorizedGetEnvPath.StatusCode -eq 200) 'Unauthorized get_env_path should still return JSON-RPC.'
+    $unauthorizedGetEnvPathJson = $unauthorizedGetEnvPath.Content | ConvertFrom-Json
+    Assert-True ($unauthorizedGetEnvPathJson.error.code -eq -32001) 'Unauthorized get_env_path should return an auth error.'
+
+    $unauthorizedRequestEnvUpload = Invoke-JsonRpcTool -Url $mcpUrl -Id 119 -ToolName 'request_env_upload'
+    Assert-True ($unauthorizedRequestEnvUpload.StatusCode -eq 200) 'Unauthorized request_env_upload should still return JSON-RPC.'
+    $unauthorizedRequestEnvUploadJson = $unauthorizedRequestEnvUpload.Content | ConvertFrom-Json
+    Assert-True ($unauthorizedRequestEnvUploadJson.error.code -eq -32001) 'Unauthorized request_env_upload should return an auth error.'
+
     $serverStatusBeforeAuth = Invoke-JsonRpcTool -Url $mcpUrl -Id 40 -ToolName 'server_status'
     $serverStatusBeforeAuthJson = $serverStatusBeforeAuth.Content | ConvertFrom-Json
     $serverStatusBeforeAuthData = $serverStatusBeforeAuthJson.result.structuredContent
@@ -561,6 +611,9 @@ try {
     Assert-True ($serverStatusBeforeAuth.Content.Contains('agent-a/cdo.php')) 'server_status agentGuide should explain the multi-agent copy model.'
     Assert-True ($serverStatusBeforeAuth.Content.Contains('recursive delete is not implemented')) 'server_status agentGuide should document recursive delete limitations.'
     Assert-True ($serverStatusBeforeAuth.Content.Contains('Rename overwrite/replace is not implemented')) 'server_status agentGuide should document rename replacement limitations.'
+    Assert-True ($serverStatusBeforeAuth.Content.Contains('get_env_path')) 'server_status agentGuide should mention env path tools.'
+    Assert-True ($serverStatusBeforeAuth.Content.Contains('request_env_upload')) 'server_status agentGuide should mention env upload tools.'
+    Assert-True ($serverStatusBeforeAuth.Content.Contains('operating system environment variables')) 'server_status agentGuide should explain that CDO does not set OS environment variables.'
 
     $contextHint = 'Codex desktop / smoke auth thread / 2026-04-28'
     $requestAuth = Invoke-JsonRpcTool -Url $mcpUrl -Id 5 -ToolName 'request_auth' -Arguments @{
@@ -654,6 +707,10 @@ try {
     Assert-True ($toolNamesAuthorized -contains 'delete_file') 'Authorized tools/list should expose delete_file.'
     Assert-True ($toolNamesAuthorized -contains 'delete_dir') 'Authorized tools/list should expose delete_dir.'
     Assert-True ($toolNamesAuthorized -contains 'rename_path') 'Authorized tools/list should expose rename_path.'
+    Assert-True ($toolNamesAuthorized -contains 'get_env_path') 'Authorized tools/list should expose get_env_path.'
+    Assert-True ($toolNamesAuthorized -contains 'request_env_upload') 'Authorized tools/list should expose request_env_upload.'
+    $envToolNamesAuthorized = @($toolNamesAuthorized | Where-Object { $_ -like '*env*' })
+    Assert-True ($envToolNamesAuthorized.Count -eq 2) 'Authorized tools/list should expose exactly two env tools.'
 
     $serverStatusAfterAuth = Invoke-JsonRpcTool -Url $mcpUrl -Id 41 -ToolName 'server_status' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token'
     $serverStatusAfterAuthJson = $serverStatusAfterAuth.Content | ConvertFrom-Json
@@ -664,6 +721,93 @@ try {
     Assert-True ($serverStatusAfterAuthData.authReason -eq 'authorized') 'server_status should explain why auth succeeded.'
     Assert-True ($serverStatusAfterAuthData.agentName -eq 'smoke-agent') 'Authenticated server_status should expose safe agent name metadata.'
     Assert-True ($serverStatusAfterAuthData.contextHint -eq $contextHint) 'Authenticated server_status should expose safe context hint metadata.'
+
+    $envSecretText = 'CDO_SMOKE_SECRET=super-secret-env-value'
+    $getEnvPath = Invoke-JsonRpcTool -Url $mcpUrl -Id 121 -ToolName 'get_env_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token'
+    $getEnvPathJson = $getEnvPath.Content | ConvertFrom-Json
+    $getEnvPathData = $getEnvPathJson.result.structuredContent
+    $envPath = [string] $getEnvPathData.envPath
+    Assert-True ($getEnvPathData.available) 'get_env_path should report an available env path in smoke.'
+    Assert-True (-not $getEnvPathData.uploaded) 'get_env_path should report not uploaded before browser upload.'
+    Assert-True ([string]::IsNullOrWhiteSpace([string] $getEnvPathData.uploadedAt)) 'get_env_path should not report uploadedAt before upload.'
+    Assert-True ($getEnvPathData.outsideDocumentRoot) 'get_env_path should place env files outside the document root.'
+    Assert-True ($getEnvPathData.readableByPhp) 'get_env_path should report the env path as readable by PHP.'
+    Assert-True ($getEnvPathData.writable) 'get_env_path should report the env path as writable.'
+    Assert-True ($envPath.EndsWith('production.env')) 'get_env_path should return a production.env target.'
+    Assert-True ($envPath.Contains('.cdo-secrets')) 'get_env_path should return the CDO secrets directory.'
+    $documentRootFullPath = [System.IO.Path]::GetFullPath((Join-Path $repoRoot 'public_html'))
+    $envFullPath = [System.IO.Path]::GetFullPath($envPath)
+    $documentRootPrefix = $documentRootFullPath.TrimEnd([char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)) + [System.IO.Path]::DirectorySeparatorChar
+    $envComparePath = $envFullPath
+    $documentRootComparePrefix = $documentRootPrefix
+
+    if (-not (Test-PosixFileModes)) {
+        $envComparePath = $envComparePath.ToLowerInvariant()
+        $documentRootComparePrefix = $documentRootComparePrefix.ToLowerInvariant()
+    }
+
+    Assert-True (-not $envComparePath.StartsWith($documentRootComparePrefix)) 'get_env_path should not return a path under public_html.'
+    Assert-True (-not $getEnvPath.Content.Contains($envSecretText)) 'get_env_path should not return env contents.'
+    Assert-True (-not $getEnvPath.Content.Contains('OPENAI_API_KEY')) 'get_env_path should not return env key names.'
+
+    $requestEnvUpload = Invoke-JsonRpcTool -Url $mcpUrl -Id 122 -ToolName 'request_env_upload' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token'
+    $requestEnvUploadJson = $requestEnvUpload.Content | ConvertFrom-Json
+    $requestEnvUploadData = $requestEnvUploadJson.result.structuredContent
+    $envUploadUrl = [string] $requestEnvUploadData.uploadUrl
+    Assert-True ($requestEnvUploadData.status -eq 'pending_upload') 'request_env_upload should create a pending upload.'
+    Assert-True ($requestEnvUploadData.envPath -eq $envPath) 'request_env_upload should use the same env path as get_env_path.'
+    Assert-True ($requestEnvUploadData.available) 'request_env_upload should report availability.'
+    Assert-True (-not [string]::IsNullOrWhiteSpace($envUploadUrl)) 'request_env_upload should return an upload URL.'
+    Assert-True ($envUploadUrl.Contains('cdo_env_upload=')) 'request_env_upload should return a browser upload token URL.'
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string] $requestEnvUploadData.expiresAt)) 'request_env_upload should return expiresAt.'
+    Assert-True (-not $requestEnvUpload.Content.Contains($envSecretText)) 'request_env_upload should not return env contents.'
+    $envUploadToken = ($envUploadUrl -split 'cdo_env_upload=')[1]
+
+    $uploadGet = Invoke-SmokeRequest -Url $envUploadUrl -Method 'GET'
+    Assert-True ($uploadGet.StatusCode -eq 200) 'Env upload GET should return 200.'
+    Assert-True ($uploadGet.Content.Contains('production.env')) 'Env upload GET should explain the fixed production.env destination.'
+    Assert-True ($uploadGet.Content.Contains('envFile')) 'Env upload GET should render the file upload field.'
+    Assert-True ($uploadGet.Content.Contains($envPath)) 'Env upload GET should show the chosen env path.'
+    Assert-True (-not $uploadGet.Content.Contains($envSecretText)) 'Env upload GET should not expose env contents.'
+
+    Set-Content -Path $envUploadFile -Value $envSecretText -NoNewline
+    $uploadPost = Invoke-MultipartFileUpload -Url $envUploadUrl -FilePath $envUploadFile
+    Assert-True ($uploadPost.StatusCode -eq 200) 'Env upload POST should return 200.'
+    Assert-True ($uploadPost.Content.Contains('production.env')) 'Env upload POST should confirm the fixed production.env destination.'
+    Assert-True ($uploadPost.Content.Contains($envPath)) 'Env upload POST should show the chosen env path.'
+    Assert-True (-not $uploadPost.Content.Contains($envSecretText)) 'Env upload POST should not echo env contents.'
+    Assert-True (Test-Path $envPath) 'Env upload should create the production.env file.'
+    Assert-True ((Get-Content -Raw $envPath) -eq $envSecretText) 'Env upload should save the uploaded content to production.env.'
+    $envFileMode = Get-PosixFileMode $envPath
+
+    if ($envFileMode -ne $null) {
+        Assert-True ($envFileMode -eq '0600') 'Env upload should set production.env mode to 0600 on POSIX.'
+    }
+
+    Set-Content -Path $envUploadFile -Value 'CDO_SMOKE_SECRET=second-value' -NoNewline
+    $reuseUploadPost = Invoke-MultipartFileUpload -Url $envUploadUrl -FilePath $envUploadFile
+    Assert-True ($reuseUploadPost.StatusCode -eq 403) 'Env upload token should be one-time and reject reuse.'
+    Assert-True ((Get-Content -Raw $envPath) -eq $envSecretText) 'Reusing an env upload token should not overwrite production.env.'
+
+    $getEnvPathAfterUpload = Invoke-JsonRpcTool -Url $mcpUrl -Id 124 -ToolName 'get_env_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token'
+    $getEnvPathAfterUploadJson = $getEnvPathAfterUpload.Content | ConvertFrom-Json
+    Assert-True ($getEnvPathAfterUploadJson.result.structuredContent.uploaded) 'get_env_path should report uploaded after browser upload.'
+    Assert-True ($getEnvPathAfterUploadJson.result.structuredContent.envPath -eq $envPath) 'get_env_path should continue returning the uploaded path.'
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string] $getEnvPathAfterUploadJson.result.structuredContent.uploadedAt)) 'get_env_path should report uploadedAt after browser upload.'
+    Assert-True (-not $getEnvPathAfterUpload.Content.Contains($envSecretText)) 'get_env_path after upload should not return env contents.'
+    Assert-True (-not $getEnvPathAfterUpload.Content.Contains('OPENAI_API_KEY')) 'get_env_path after upload should not return env key names.'
+
+    $readEnvAbsolute = Invoke-JsonRpcTool -Url $mcpUrl -Id 125 -ToolName 'read_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = $envPath
+    }
+    $readEnvAbsoluteJson = $readEnvAbsolute.Content | ConvertFrom-Json
+    Assert-True ($readEnvAbsoluteJson.error.code -eq -32602) 'read_file should reject the external env path.'
+
+    $envStateContent = Get-Content -Raw $envStateFile
+    $envStateJson = $envStateContent | ConvertFrom-Json
+    Assert-True ($envStateJson.envPath -eq $envPath) 'Env state should store the env path metadata.'
+    Assert-True (-not $envStateContent.Contains($envSecretText)) 'Env state should not store env contents.'
+    Assert-True (-not $envStateContent.Contains($envUploadToken)) 'Env state should not store the plain env upload token.'
 
     $serverStatusAuthorizationHeader = Invoke-JsonRpcTool -Url $mcpUrl -Id 43 -ToolName 'server_status' -BearerToken $bearerToken -BearerHeaderName 'Authorization'
     $serverStatusAuthorizationHeaderJson = $serverStatusAuthorizationHeader.Content | ConvertFrom-Json
@@ -1099,6 +1243,7 @@ try {
     $debugLogContent = Get-Content -Raw $debugLog
     Assert-True ($debugLogContent.Contains('"event":"tools_list"')) 'Debug log should record tools/list decisions.'
     Assert-True ($debugLogContent.Contains('"event":"auth_context"')) 'Debug log should record auth context decisions.'
+    Assert-True (-not $debugLogContent.Contains('CDO_SMOKE_SECRET=super-secret-env-value')) 'Debug log should not contain uploaded env contents.'
 
     Write-Output 'Smoke OK'
 } finally {
@@ -1112,6 +1257,12 @@ try {
         $env:CDO_AUTH_STATE_PATH = $previousAuthPath
     }
 
+    if ($null -eq $previousEnvPath -or $previousEnvPath -eq '') {
+        Remove-Item Env:\CDO_ENV_STATE_PATH -ErrorAction SilentlyContinue
+    } else {
+        $env:CDO_ENV_STATE_PATH = $previousEnvPath
+    }
+
     if ($null -eq $previousDebugPath -or $previousDebugPath -eq '') {
         Remove-Item Env:\CDO_DEBUG_LOG_PATH -ErrorAction SilentlyContinue
     } else {
@@ -1119,7 +1270,9 @@ try {
     }
 
     Remove-IfExists $authFile
+    Remove-IfExists $envStateFile
     Remove-IfExists $debugLog
+    Remove-IfExists $envSecretsRoot
     Remove-IfExists $renamedEntrypoint
     Remove-IfExists $subdirEntrypointDir
     Remove-IfExists $visibleDotFile

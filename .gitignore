@@ -3,6 +3,8 @@
 /.phpunit.result.cache
 /.idea/
 /.vscode/
+/.cdo_env.json
+/.cdo-secrets/
 
 public_html/*
 !public_html/cdo.php
