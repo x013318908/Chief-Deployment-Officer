@@ -45,7 +45,7 @@ MCP endpoint は次のどちらでも使えます。
 
 ブラウザまたはAIエージェントが `cdo.php` にアクセスすると、MCP endpoint、認証状態、承認済みエージェント情報、危険操作の注意をまとめた案内ページを表示します。この画面はユーザー向けセクションを先に、AIエージェント向けセクションを後に表示します。
 
-AIエージェントにリモートの `cdo.php` URL を渡す場合は、そのURL自体を MCP endpoint としてそのまま使わせてください。AIエージェント側ではローカルリポジトリや別パスを推測せず、まず配置済みページのAI向けセクションを読み、`tools/list`、次に `server_status`、必要なら `request_auth` の順に呼びます。
+AIエージェントにリモートの `cdo.php` URL を渡す場合は、そのURL自体を MCP endpoint としてそのまま使わせてください。AIエージェント側ではローカルリポジトリや別パスを推測せず、まず配置済みページのAI向けセクションを読むか、`server_status` の `agentGuide` を確認します。そのうえで `tools/list`、次に `server_status`、必要なら `request_auth` の順に呼びます。
 
 `/sse` は dev router で `cdo.php` に流れますが、SSE transport 自体は未実装です。MCP Inspector では Streamable HTTP を選び、URL は `/mcp` か `/cdo.php` を指定してください。
 
@@ -63,8 +63,8 @@ AIエージェントにリモートの `cdo.php` URL を渡す場合は、その
 - `cdo.php` は推測されにくいPHPファイル名に変更し、MCP endpoint URL も変更後のファイル名で指定してください
 - サーバー側でIP制限、Basic認証、管理画面配下配置などの追加アクセス制限を検討してください
 - `write_file`, `delete_file`, `delete_dir`, `rename_path` を使う前に、対象ディレクトリのバックアップを取ってください
-- 不要になった認証は `public_html/.cdo_auth.json` を削除してリセットしてください
-- `public_html/.cdo_auth.json` と `public_html/.cdo_debug.log` は公開配布物・共有物に含めないでください
+- 不要になった認証は、配置先ディレクトリの `.cdo_auth.json` を削除してリセットしてください
+- `.cdo_auth.json` と `.cdo_debug.log` は公開配布物・共有物に含めないでください
 
 ## 複数エージェントで使う場合
 
@@ -75,7 +75,7 @@ Chief-Deployment-Officer は `1ファイル=1エージェント認証` の運用
 ## 認証フロー
 
 1. 未認証の状態で `request_auth` を呼びます。
-2. 応答の `approvalUrl` をブラウザで開き、ユーザーが `はい` を押します。
+2. 応答の `approvalUrl` をブラウザで開き、ユーザーが `承認する` を押します。
 3. 同じ応答に含まれる `bearerToken` を `X-CDO-Bearer-Token: ...` で送ると、保護ツールが使えます。
 
 `request_auth` には任意で `agentName` と `contextHint` を渡せます。`contextHint` は、あとでユーザーが承認した対話スレッドを探すための短い手がかりです。例: `Codex desktop / Chief-Deployment-Officer release thread / 2026-04-28`。秘密情報やtokenは入れないでください。
@@ -84,13 +84,15 @@ Chief-Deployment-Officer は `1ファイル=1エージェント認証` の運用
 
 MCP Inspector では `Authentication` パネルの custom headers に `X-CDO-Bearer-Token: <bearerToken>` を追加してください。`Authorization: Bearer ...` も受け付けますが、Inspector では専用ヘッダーのほうが切り分けしやすいです。
 
-認証状態は `public_html/.cdo_auth.json` に保存されます。削除すると新しいエージェントを承認できます。
-認証デバッグログは `public_html/.cdo_debug.log` に JSON Lines で追記されます。
+認証状態は既定では `cdo.php` と同じディレクトリの `.cdo_auth.json` に保存されます。削除すると新しいエージェントを承認できます。
+認証デバッグログは既定では同じディレクトリの `.cdo_debug.log` に JSON Lines で追記されます。
 
 ## デバッグ
 
 `server_status` は接続確認だけでなく、現在の認証判定も返します。特に次の項目で切り分けできます。
 
+- `endpoint`: 現在のリクエストから組み立てた MCP endpoint URL
+- `agentGuide`: AIエージェント向けの接続手順、認証手順、危険操作ルール、timeout時の確認手順
 - `authorizationHeaderPresent`: Authorization ヘッダーがサーバーに届いたか
 - `inspectorBearerHeaderPresent`: `X-CDO-Bearer-Token` ヘッダーがサーバーに届いたか
 - `authorized`: 現在のリクエストが承認済みとして通ったか
@@ -98,7 +100,7 @@ MCP Inspector では `Authentication` パネルの custom headers に `X-CDO-Bea
 - `bearerHeaderSource`: 実際に採用したヘッダー名
 - `agentName`, `contextHint`, `approvedAt`, `lastUsedAt`: どのAIエージェントにいつ承認したかの確認情報
 
-Inspector で保護ツールが見えない場合は、まず `server_status` を呼んでこの 4 項目を見てください。そのうえで `public_html/.cdo_debug.log` を開くと、`tools/list` と `auth_context` の判定履歴が確認できます。
+Inspector で保護ツールが見えない場合は、まず `server_status` を呼んで上記項目を見てください。そのうえで配置先ディレクトリの `.cdo_debug.log` を開くと、`tools/list` と `auth_context` の判定履歴が確認できます。
 
 開発やテストで状態ファイルを分離したい場合は、`CDO_AUTH_STATE_PATH` と `CDO_DEBUG_LOG_PATH` で保存先を上書きできます。
 
