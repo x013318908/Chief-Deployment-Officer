@@ -261,11 +261,16 @@ $tmpDir = Join-Path $repoRoot 'dev\tests\tmp'
 $authFile = Join-Path $tmpDir 'smoke-auth.json'
 $envStateFile = Join-Path $tmpDir 'smoke-env.json'
 $debugLog = Join-Path $tmpDir 'smoke-debug.log'
+$nestedAuthFile = Join-Path $tmpDir 'smoke-nested-auth.json'
+$nestedEnvStateFile = Join-Path $tmpDir 'smoke-nested-env.json'
+$nestedDebugLog = Join-Path $tmpDir 'smoke-nested-debug.log'
 $envSecretsRoot = Join-Path $repoRoot '.cdo-secrets'
 $envUploadFile = Join-Path $tmpDir 'smoke-production-env.txt'
 $renamedEntrypoint = Join-Path $repoRoot 'public_html\chief-smoke.php'
 $subdirEntrypointDir = Join-Path $repoRoot 'public_html\agent-smoke'
 $subdirEntrypoint = Join-Path $subdirEntrypointDir 'cdo.php'
+$nestedDocrootDir = Join-Path $repoRoot 'public_html\nested-docroot'
+$nestedDocrootEntrypoint = Join-Path $nestedDocrootDir 'cdo.php'
 $visibleDotFile = Join-Path $repoRoot 'public_html\.smoke-visible.txt'
 $internalControlFile = Join-Path $repoRoot 'public_html\.cdo_secret.txt'
 $fixtureDir = Join-Path $repoRoot 'public_html\smoke-fixture'
@@ -295,9 +300,13 @@ New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
 Remove-IfExists $authFile
 Remove-IfExists $envStateFile
 Remove-IfExists $debugLog
+Remove-IfExists $nestedAuthFile
+Remove-IfExists $nestedEnvStateFile
+Remove-IfExists $nestedDebugLog
 Remove-IfExists $envSecretsRoot
 Remove-IfExists $renamedEntrypoint
 Remove-IfExists $subdirEntrypointDir
+Remove-IfExists $nestedDocrootDir
 Remove-IfExists $visibleDotFile
 Remove-IfExists $internalControlFile
 Remove-IfExists $fixtureDir
@@ -309,6 +318,8 @@ Remove-IfExists $renameDir
 Copy-Item -Path $entrypoint -Destination $renamedEntrypoint -Force
 New-Item -ItemType Directory -Path $subdirEntrypointDir | Out-Null
 Copy-Item -Path $entrypoint -Destination $subdirEntrypoint -Force
+New-Item -ItemType Directory -Path $nestedDocrootDir | Out-Null
+Copy-Item -Path $entrypoint -Destination $nestedDocrootEntrypoint -Force
 Set-Content -Path $visibleDotFile -Value 'visible-root-dot'
 Set-Content -Path $internalControlFile -Value 'internal-secret'
 New-Item -ItemType Directory -Path $fixtureDir | Out-Null
@@ -339,6 +350,7 @@ $serverProcess = Start-Process -FilePath 'php' `
     -ArgumentList '-S', ("127.0.0.1:" + $port), '-t', 'public_html', 'dev/server/router.php' `
     -WorkingDirectory $repoRoot `
     -PassThru
+$nestedServerProcess = $null
 
 $rootUrl = "http://127.0.0.1:$port/"
 $mcpUrl = "http://127.0.0.1:$port/mcp"
@@ -438,6 +450,69 @@ try {
     Assert-True ($subdirApprovalUrl.Contains('/agent-smoke/cdo.php?cdo_approve=')) 'Subdirectory entrypoint should build approval URLs with the subdirectory path.'
     Remove-IfExists $authFile
     Remove-IfExists $debugLog
+
+    $nestedPort = Get-FreePort
+    $env:CDO_AUTH_STATE_PATH = $nestedAuthFile
+    $env:CDO_ENV_STATE_PATH = $nestedEnvStateFile
+    $env:CDO_DEBUG_LOG_PATH = $nestedDebugLog
+    $nestedServerProcess = Start-Process -FilePath 'php' `
+        -ArgumentList '-S', ("127.0.0.1:" + $nestedPort), '-t', 'public_html/nested-docroot' `
+        -WorkingDirectory $repoRoot `
+        -PassThru
+    $env:CDO_AUTH_STATE_PATH = $authFile
+    $env:CDO_ENV_STATE_PATH = $envStateFile
+    $env:CDO_DEBUG_LOG_PATH = $debugLog
+
+    try {
+        Start-Sleep -Seconds 2
+        $nestedDocrootUrl = "http://127.0.0.1:$nestedPort/cdo.php"
+        $nestedProbe = Invoke-SmokeRequest -Url $nestedDocrootUrl -Method 'GET'
+        Assert-True ($nestedProbe.StatusCode -eq 200) 'Nested document root entrypoint should return 200.'
+
+        $nestedRequestAuth = Invoke-JsonRpcTool -Url $nestedDocrootUrl -Id 18 -ToolName 'request_auth' -Arguments @{
+            agentName = 'nested-docroot-smoke-agent'
+        }
+        $nestedRequestAuthJson = $nestedRequestAuth.Content | ConvertFrom-Json
+        $nestedApprovalUrl = [string] $nestedRequestAuthJson.result.structuredContent.approvalUrl
+        $nestedBearerToken = [string] $nestedRequestAuthJson.result.structuredContent.bearerToken
+        $nestedApprovalPost = Invoke-SmokeRequest -Url $nestedApprovalUrl -Method 'POST' -Headers @{
+            'Content-Type' = 'application/x-www-form-urlencoded'
+        } -Body 'approve=yes'
+        Assert-True ($nestedApprovalPost.StatusCode -eq 200) 'Nested document root approval should return 200.'
+
+        $nestedGetEnvPath = Invoke-JsonRpcTool -Url $nestedDocrootUrl -Id 19 -ToolName 'get_env_path' -BearerToken $nestedBearerToken -BearerHeaderName 'X-CDO-Bearer-Token'
+        $nestedGetEnvPathJson = $nestedGetEnvPath.Content | ConvertFrom-Json
+        $nestedGetEnvPathData = $nestedGetEnvPathJson.result.structuredContent
+        $nestedEnvPath = [string] $nestedGetEnvPathData.envPath
+        Assert-True ($nestedGetEnvPathData.available) 'Nested document root get_env_path should be available.'
+        Assert-True ($nestedEnvPath.EndsWith('production.env')) 'Nested document root get_env_path should return production.env.'
+
+        $publicHtmlFullPath = [System.IO.Path]::GetFullPath((Join-Path $repoRoot 'public_html'))
+        $publicHtmlPrefix = $publicHtmlFullPath.TrimEnd([char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)) + [System.IO.Path]::DirectorySeparatorChar
+        $envSecretsPrefix = [System.IO.Path]::GetFullPath($envSecretsRoot).TrimEnd([char[]]@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)) + [System.IO.Path]::DirectorySeparatorChar
+        $nestedEnvFullPath = [System.IO.Path]::GetFullPath($nestedEnvPath)
+        $nestedEnvComparePath = $nestedEnvFullPath
+        $publicHtmlComparePrefix = $publicHtmlPrefix
+        $envSecretsComparePrefix = $envSecretsPrefix
+
+        if (-not (Test-PosixFileModes)) {
+            $nestedEnvComparePath = $nestedEnvComparePath.ToLowerInvariant()
+            $publicHtmlComparePrefix = $publicHtmlComparePrefix.ToLowerInvariant()
+            $envSecretsComparePrefix = $envSecretsComparePrefix.ToLowerInvariant()
+        }
+
+        Assert-True (-not $nestedEnvComparePath.StartsWith($publicHtmlComparePrefix)) 'Nested document root get_env_path should not return a path under public_html.'
+        Assert-True ($nestedEnvComparePath.StartsWith($envSecretsComparePrefix)) 'Nested document root get_env_path should return the repo-level .cdo-secrets path.'
+    } finally {
+        if ($nestedServerProcess -and -not $nestedServerProcess.HasExited) {
+            Stop-Process -Id $nestedServerProcess.Id -ErrorAction SilentlyContinue
+        }
+
+        $nestedServerProcess = $null
+        Remove-IfExists $nestedAuthFile
+        Remove-IfExists $nestedEnvStateFile
+        Remove-IfExists $nestedDebugLog
+    }
 
     $favicon = Invoke-SmokeRequest -Url ("http://127.0.0.1:$port/favicon.ico") -Method 'GET'
     Assert-True ($favicon.StatusCode -eq 204) 'GET /favicon.ico should return 204.'
@@ -1247,6 +1322,10 @@ try {
 
     Write-Output 'Smoke OK'
 } finally {
+    if ($nestedServerProcess -and -not $nestedServerProcess.HasExited) {
+        Stop-Process -Id $nestedServerProcess.Id -ErrorAction SilentlyContinue
+    }
+
     if ($serverProcess -and -not $serverProcess.HasExited) {
         Stop-Process -Id $serverProcess.Id -ErrorAction SilentlyContinue
     }
@@ -1272,9 +1351,13 @@ try {
     Remove-IfExists $authFile
     Remove-IfExists $envStateFile
     Remove-IfExists $debugLog
+    Remove-IfExists $nestedAuthFile
+    Remove-IfExists $nestedEnvStateFile
+    Remove-IfExists $nestedDebugLog
     Remove-IfExists $envSecretsRoot
     Remove-IfExists $renamedEntrypoint
     Remove-IfExists $subdirEntrypointDir
+    Remove-IfExists $nestedDocrootDir
     Remove-IfExists $visibleDotFile
     Remove-IfExists $internalControlFile
     Remove-IfExists $fixtureDir

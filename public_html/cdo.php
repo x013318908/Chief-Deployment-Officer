@@ -1077,7 +1077,32 @@ function cdo_env_app_root_hash(): string
     return substr(hash('sha256', cdo_normalized_absolute_path($root)), 0, 16);
 }
 
-function cdo_computed_env_path(): ?string
+function cdo_public_html_ancestor_path(string $path): ?string
+{
+    $current = realpath($path);
+
+    if (!is_string($current)) {
+        $current = $path;
+    }
+
+    while (true) {
+        $basename = basename($current);
+
+        if (strcasecmp($basename, 'public_html') === 0) {
+            return $current;
+        }
+
+        $parent = dirname($current);
+
+        if ($parent === $current) {
+            return null;
+        }
+
+        $current = $parent;
+    }
+}
+
+function cdo_env_storage_base_directory(): ?string
 {
     $documentRoot = cdo_document_root_path();
 
@@ -1085,7 +1110,24 @@ function cdo_computed_env_path(): ?string
         return null;
     }
 
-    return dirname($documentRoot)
+    $publicHtmlRoot = cdo_public_html_ancestor_path($documentRoot);
+
+    if ($publicHtmlRoot !== null) {
+        return dirname($publicHtmlRoot);
+    }
+
+    return dirname($documentRoot);
+}
+
+function cdo_computed_env_path(): ?string
+{
+    $baseDirectory = cdo_env_storage_base_directory();
+
+    if ($baseDirectory === null) {
+        return null;
+    }
+
+    return $baseDirectory
         . DIRECTORY_SEPARATOR
         . '.cdo-secrets'
         . DIRECTORY_SEPARATOR
@@ -1103,6 +1145,23 @@ function cdo_env_path_is_outside_document_root(string $envPath): bool
     }
 
     return !cdo_path_is_under_root($envPath, $documentRoot);
+}
+
+function cdo_env_path_is_outside_public_html(string $envPath): bool
+{
+    $documentRoot = cdo_document_root_path();
+
+    if ($documentRoot === null) {
+        return false;
+    }
+
+    $publicHtmlRoot = cdo_public_html_ancestor_path($documentRoot);
+
+    if ($publicHtmlRoot === null) {
+        return true;
+    }
+
+    return !cdo_path_is_under_root($envPath, $publicHtmlRoot);
 }
 
 function cdo_existing_env_ancestor_path(string $envPath): ?string
@@ -1153,6 +1212,7 @@ function cdo_env_path_status(?string $envPath, ?int $uploadedAt = null): array
     }
 
     $outsideDocumentRoot = cdo_env_path_is_outside_document_root($envPath);
+    $outsidePublicHtml = cdo_env_path_is_outside_public_html($envPath);
     $directory = dirname($envPath);
     $ancestor = cdo_existing_env_ancestor_path($envPath);
     $writable = is_dir($directory) ? is_writable($directory) : ($ancestor !== null && is_writable($ancestor));
@@ -1161,6 +1221,8 @@ function cdo_env_path_status(?string $envPath, ?int $uploadedAt = null): array
 
     if (!$outsideDocumentRoot) {
         $reason = 'inside_document_root';
+    } elseif (!$outsidePublicHtml) {
+        $reason = 'inside_public_html';
     } elseif (!$writable) {
         $reason = 'env_directory_not_writable';
     } elseif (!$readableByPhp) {
@@ -1169,7 +1231,7 @@ function cdo_env_path_status(?string $envPath, ?int $uploadedAt = null): array
 
     return [
         'envPath' => $envPath,
-        'available' => $outsideDocumentRoot && $writable && $readableByPhp,
+        'available' => $outsideDocumentRoot && $outsidePublicHtml && $writable && $readableByPhp,
         'uploaded' => $uploadedAt !== null,
         'uploadedAt' => cdo_public_time($uploadedAt),
         'outsideDocumentRoot' => $outsideDocumentRoot,
