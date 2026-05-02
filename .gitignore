@@ -3,6 +3,9 @@
 /.phpunit.result.cache
 /.idea/
 /.vscode/
+.*_auth.json
+.*_env.json
+.*_debug.log
 /.cdo_env.json
 /.cdo-secrets/
 

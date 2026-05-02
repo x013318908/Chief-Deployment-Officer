@@ -11,9 +11,9 @@ const CDO_SUPPORTED_PROTOCOL_VERSIONS = [
     '2025-06-18',
     '2025-03-26',
 ];
-const CDO_AUTH_FILE_NAME = '.cdo_auth.json';
-const CDO_ENV_FILE_NAME = '.cdo_env.json';
-const CDO_DEBUG_LOG_FILE_NAME = '.cdo_debug.log';
+const CDO_AUTH_FILE_SUFFIX = '_auth.json';
+const CDO_ENV_FILE_SUFFIX = '_env.json';
+const CDO_DEBUG_LOG_FILE_SUFFIX = '_debug.log';
 const CDO_APPROVAL_QUERY_KEY = 'cdo_approve';
 const CDO_ENV_UPLOAD_QUERY_KEY = 'cdo_env_upload';
 const CDO_AUTH_IDLE_SECONDS = 2592000;
@@ -217,6 +217,64 @@ function cdo_app_root(): string
     return __DIR__;
 }
 
+function cdo_entrypoint_file_basename(): string
+{
+    $scriptFilename = (string) ($_SERVER['SCRIPT_FILENAME'] ?? __FILE__);
+    $basename = basename($scriptFilename);
+
+    return $basename !== '' ? $basename : basename(__FILE__);
+}
+
+function cdo_entrypoint_file_prefix(): string
+{
+    $filename = cdo_entrypoint_file_basename();
+    $prefix = pathinfo($filename, PATHINFO_FILENAME);
+
+    if (!is_string($prefix) || $prefix === '') {
+        $prefix = 'cdo';
+    }
+
+    $prefix = preg_replace('/[^A-Za-z0-9._-]+/', '-', $prefix);
+
+    if (!is_string($prefix)) {
+        return 'cdo';
+    }
+
+    $prefix = trim($prefix, '-');
+
+    return $prefix === '' ? 'cdo' : $prefix;
+}
+
+function cdo_related_file_name(string $suffix): string
+{
+    return '.' . cdo_entrypoint_file_prefix() . $suffix;
+}
+
+function cdo_auth_file_name(): string
+{
+    return cdo_related_file_name(CDO_AUTH_FILE_SUFFIX);
+}
+
+function cdo_env_file_name(): string
+{
+    return cdo_related_file_name(CDO_ENV_FILE_SUFFIX);
+}
+
+function cdo_debug_log_file_name(): string
+{
+    return cdo_related_file_name(CDO_DEBUG_LOG_FILE_SUFFIX);
+}
+
+function cdo_auth_reset_instruction(): string
+{
+    return 'Delete ' . cdo_auth_file_name() . ' to reset.';
+}
+
+function cdo_auth_distribution_warning(): string
+{
+    return 'Do not distribute ' . cdo_auth_file_name() . ' or ' . cdo_debug_log_file_name() . '.';
+}
+
 function cdo_auth_state_path(): string
 {
     $override = getenv('CDO_AUTH_STATE_PATH');
@@ -225,7 +283,7 @@ function cdo_auth_state_path(): string
         return $override;
     }
 
-    return cdo_app_root() . DIRECTORY_SEPARATOR . CDO_AUTH_FILE_NAME;
+    return cdo_app_root() . DIRECTORY_SEPARATOR . cdo_auth_file_name();
 }
 
 function cdo_env_state_path(): string
@@ -236,7 +294,7 @@ function cdo_env_state_path(): string
         return $override;
     }
 
-    return cdo_app_root() . DIRECTORY_SEPARATOR . CDO_ENV_FILE_NAME;
+    return cdo_app_root() . DIRECTORY_SEPARATOR . cdo_env_file_name();
 }
 
 function cdo_debug_log_path(): string
@@ -247,7 +305,7 @@ function cdo_debug_log_path(): string
         return $override;
     }
 
-    return cdo_app_root() . DIRECTORY_SEPARATOR . CDO_DEBUG_LOG_FILE_NAME;
+    return cdo_app_root() . DIRECTORY_SEPARATOR . cdo_debug_log_file_name();
 }
 
 function cdo_hash_secret(string $value): string
@@ -482,7 +540,7 @@ function cdo_agent_guide_payload(string $endpointUrl): array
             'First call server_status, then use list_dir and read_file to verify the target state.',
             'If the change is already reflected, treat it as success. If it is not reflected, ask the user before running the operation again.',
         ],
-        'reset' => 'To reset approval, delete .cdo_auth.json next to this endpoint. Do not distribute .cdo_auth.json or .cdo_debug.log.',
+        'reset' => 'To reset approval, delete ' . cdo_auth_file_name() . ' next to this endpoint. ' . cdo_auth_distribution_warning(),
     ];
 }
 
@@ -889,7 +947,7 @@ function cdo_load_auth_state(): ?array
     if (!is_string($raw) || $raw === '') {
         return [
             'state' => 'locked',
-            'message' => 'Auth state file is unreadable. Delete .cdo_auth.json to reset.',
+            'message' => 'Auth state file is unreadable. ' . cdo_auth_reset_instruction(),
             'lockedAt' => cdo_now(),
         ];
     }
@@ -899,7 +957,7 @@ function cdo_load_auth_state(): ?array
     } catch (JsonException $exception) {
         return [
             'state' => 'locked',
-            'message' => 'Auth state file is invalid. Delete .cdo_auth.json to reset.',
+            'message' => 'Auth state file is invalid. ' . cdo_auth_reset_instruction(),
             'lockedAt' => cdo_now(),
         ];
     }
@@ -907,7 +965,7 @@ function cdo_load_auth_state(): ?array
     if (!is_array($decoded)) {
         return [
             'state' => 'locked',
-            'message' => 'Auth state file is invalid. Delete .cdo_auth.json to reset.',
+            'message' => 'Auth state file is invalid. ' . cdo_auth_reset_instruction(),
             'lockedAt' => cdo_now(),
         ];
     }
@@ -929,21 +987,21 @@ function cdo_load_auth_state(): ?array
 
     if (!in_array($state['state'], ['pending', 'approved', 'locked'], true)) {
         $state['state'] = 'locked';
-        $state['message'] = 'Auth state file is invalid. Delete .cdo_auth.json to reset.';
+        $state['message'] = 'Auth state file is invalid. ' . cdo_auth_reset_instruction();
     }
 
     if ($state['state'] === 'pending') {
         if (!is_string($state['approvalSecret']) || $state['approvalSecret'] === ''
             || !is_string($state['pendingBearerToken']) || $state['pendingBearerToken'] === '') {
             $state['state'] = 'locked';
-            $state['message'] = 'Pending auth state is invalid. Delete .cdo_auth.json to reset.';
+            $state['message'] = 'Pending auth state is invalid. ' . cdo_auth_reset_instruction();
         }
     }
 
     if ($state['state'] === 'approved') {
         if (!is_string($state['bearerTokenHash']) || $state['bearerTokenHash'] === '') {
             $state['state'] = 'locked';
-            $state['message'] = 'Approved auth state is invalid. Delete .cdo_auth.json to reset.';
+            $state['message'] = 'Approved auth state is invalid. ' . cdo_auth_reset_instruction();
         }
     }
 
@@ -1074,7 +1132,9 @@ function cdo_env_app_root_hash(): string
         $root = cdo_app_root();
     }
 
-    return substr(hash('sha256', cdo_normalized_absolute_path($root)), 0, 16);
+    $hashInput = cdo_normalized_absolute_path($root) . '/' . cdo_entrypoint_file_basename();
+
+    return substr(hash('sha256', $hashInput), 0, 16);
 }
 
 function cdo_public_html_ancestor_path(string $path): ?string
@@ -1312,7 +1372,7 @@ function cdo_refresh_auth_state(?array $state): ?array
 
     $state['state'] = 'locked';
     $state['lockedAt'] = cdo_now();
-    $state['message'] = 'The MCP bearer token has expired after 30 days of inactivity. Delete .cdo_auth.json to reset.';
+    $state['message'] = 'The MCP bearer token has expired after 30 days of inactivity. ' . cdo_auth_reset_instruction();
     cdo_save_auth_state($state);
 
     return $state;
@@ -2010,14 +2070,14 @@ function cdo_request_auth_payload(array $authContext, array $params): array
     if (($state['state'] ?? null) === 'locked') {
         return array_merge(cdo_auth_state_public_payload($state), [
             'status' => 'locked',
-            'message' => (string) ($state['message'] ?? 'Authentication is locked. Delete .cdo_auth.json to reset.'),
+            'message' => (string) ($state['message'] ?? 'Authentication is locked. ' . cdo_auth_reset_instruction()),
             'approved' => false,
         ]);
     }
 
     return array_merge(cdo_auth_state_public_payload($state), [
         'status' => 'already_configured',
-        'message' => 'An approved agent is already configured. Delete .cdo_auth.json to reset.',
+        'message' => 'An approved agent is already configured. ' . cdo_auth_reset_instruction(),
         'alreadyConfigured' => true,
         'approved' => false,
     ]);
@@ -2133,10 +2193,27 @@ function cdo_resolve_existing_ancestor_path(string $filesystemPath): string
     return $ancestorPath;
 }
 
+function cdo_is_internal_control_file_name(string $name): bool
+{
+    if (strpos($name, CDO_INTERNAL_FILE_PREFIX) === 0) {
+        return true;
+    }
+
+    if (preg_match('/^\..+_(auth|env)\.json$/', $name) === 1) {
+        return true;
+    }
+
+    if (preg_match('/^\..+_debug\.log$/', $name) === 1) {
+        return true;
+    }
+
+    return false;
+}
+
 function cdo_path_contains_internal_file(string $relativePath): bool
 {
     foreach (explode('/', $relativePath) as $segment) {
-        if (strpos($segment, CDO_INTERNAL_FILE_PREFIX) === 0) {
+        if (cdo_is_internal_control_file_name($segment)) {
             return true;
         }
     }
@@ -2279,7 +2356,7 @@ function cdo_list_dir_payload(array $params): array
 
         $name = $item->getFilename();
 
-        if (strpos($name, CDO_INTERNAL_FILE_PREFIX) === 0) {
+        if (cdo_is_internal_control_file_name($name)) {
             continue;
         }
 
@@ -2719,12 +2796,13 @@ function cdo_render_invalid_approval_page(?array $state): void
     $agentName = cdo_html_text(cdo_public_text($state['agentName'] ?? null));
     $entrypointPath = cdo_get_entrypoint_path();
     $entrypointHref = htmlspecialchars($entrypointPath, ENT_QUOTES, 'UTF-8');
+    $authFileName = cdo_html_text(cdo_auth_file_name());
 
     $bodyHtml = <<<HTML
 <h1>無効な承認リンク</h1>
 <p>この承認リンクは使用できません。<br>すでに使用済み、期限切れ、または別の承認リクエストで置き換えられた可能性があります。</p>
 <p>すでに承認した場合は、AIエージェント（{$agentName}）との会話に戻って「承認しました」と伝えてください。<br>まだ承認していない場合は、AIエージェントに承認リンクを再発行してもらってください。</p>
-<p>認証を取り消すには、<code>.cdo_auth.json</code> を削除してください。<a href="{$entrypointHref}">最初の手順</a>から再びやり直せるようになります。</p>
+<p>認証を取り消すには、<code>{$authFileName}</code> を削除してください。<a href="{$entrypointHref}">最初の手順</a>から再びやり直せるようになります。</p>
 HTML;
 
     cdo_render_page('無効な承認リンク', $bodyHtml, 404);

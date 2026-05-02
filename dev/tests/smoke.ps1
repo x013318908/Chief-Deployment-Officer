@@ -267,6 +267,12 @@ $nestedDebugLog = Join-Path $tmpDir 'smoke-nested-debug.log'
 $envSecretsRoot = Join-Path $repoRoot '.cdo-secrets'
 $envUploadFile = Join-Path $tmpDir 'smoke-production-env.txt'
 $renamedEntrypoint = Join-Path $repoRoot 'public_html\chief-smoke.php'
+$defaultAuthFile = Join-Path $repoRoot 'public_html\.cdo_auth.json'
+$defaultEnvStateFile = Join-Path $repoRoot 'public_html\.cdo_env.json'
+$defaultDebugLog = Join-Path $repoRoot 'public_html\.cdo_debug.log'
+$renamedAuthFile = Join-Path $repoRoot 'public_html\.chief-smoke_auth.json'
+$renamedEnvStateFile = Join-Path $repoRoot 'public_html\.chief-smoke_env.json'
+$renamedDebugLog = Join-Path $repoRoot 'public_html\.chief-smoke_debug.log'
 $subdirEntrypointDir = Join-Path $repoRoot 'public_html\agent-smoke'
 $subdirEntrypoint = Join-Path $subdirEntrypointDir 'cdo.php'
 $nestedDocrootDir = Join-Path $repoRoot 'public_html\nested-docroot'
@@ -305,6 +311,12 @@ Remove-IfExists $nestedEnvStateFile
 Remove-IfExists $nestedDebugLog
 Remove-IfExists $envSecretsRoot
 Remove-IfExists $renamedEntrypoint
+Remove-IfExists $defaultAuthFile
+Remove-IfExists $defaultEnvStateFile
+Remove-IfExists $defaultDebugLog
+Remove-IfExists $renamedAuthFile
+Remove-IfExists $renamedEnvStateFile
+Remove-IfExists $renamedDebugLog
 Remove-IfExists $subdirEntrypointDir
 Remove-IfExists $nestedDocrootDir
 Remove-IfExists $visibleDotFile
@@ -351,6 +363,7 @@ $serverProcess = Start-Process -FilePath 'php' `
     -WorkingDirectory $repoRoot `
     -PassThru
 $nestedServerProcess = $null
+$renamedNoOverrideServerProcess = $null
 
 $rootUrl = "http://127.0.0.1:$port/"
 $mcpUrl = "http://127.0.0.1:$port/mcp"
@@ -435,6 +448,93 @@ try {
     Assert-True ($renamedApprovalUrl.Contains('/chief-smoke.php?cdo_approve=')) 'Renamed entrypoint should build approval URLs with the current filename.'
     Remove-IfExists $authFile
     Remove-IfExists $debugLog
+
+    $renamedNoOverridePort = Get-FreePort
+    $currentAuthPath = $env:CDO_AUTH_STATE_PATH
+    $currentEnvPath = $env:CDO_ENV_STATE_PATH
+    $currentDebugPath = $env:CDO_DEBUG_LOG_PATH
+    Remove-Item Env:\CDO_AUTH_STATE_PATH -ErrorAction SilentlyContinue
+    Remove-Item Env:\CDO_ENV_STATE_PATH -ErrorAction SilentlyContinue
+    Remove-Item Env:\CDO_DEBUG_LOG_PATH -ErrorAction SilentlyContinue
+    $renamedNoOverrideServerProcess = Start-Process -FilePath 'php' `
+        -ArgumentList '-S', ("127.0.0.1:" + $renamedNoOverridePort), '-t', 'public_html', 'dev/server/router.php' `
+        -WorkingDirectory $repoRoot `
+        -PassThru
+    $env:CDO_AUTH_STATE_PATH = $currentAuthPath
+    $env:CDO_ENV_STATE_PATH = $currentEnvPath
+    $env:CDO_DEBUG_LOG_PATH = $currentDebugPath
+
+    try {
+        Start-Sleep -Seconds 2
+        $renamedNoOverrideUrl = "http://127.0.0.1:$renamedNoOverridePort/chief-smoke.php"
+        $defaultNoOverrideUrl = "http://127.0.0.1:$renamedNoOverridePort/cdo.php"
+
+        $renamedNoOverrideRequestAuth = Invoke-JsonRpcTool -Url $renamedNoOverrideUrl -Id 18 -ToolName 'request_auth' -Arguments @{
+            agentName = 'renamed-no-override-agent'
+        }
+        $renamedNoOverrideRequestAuthJson = $renamedNoOverrideRequestAuth.Content | ConvertFrom-Json
+        $renamedNoOverrideApprovalUrl = [string] $renamedNoOverrideRequestAuthJson.result.structuredContent.approvalUrl
+        $renamedNoOverrideBearerToken = [string] $renamedNoOverrideRequestAuthJson.result.structuredContent.bearerToken
+        Assert-True ($renamedNoOverrideApprovalUrl.Contains('/chief-smoke.php?cdo_approve=')) 'Renamed entrypoint without overrides should build approval URLs with the current filename.'
+        Assert-True (Test-Path $renamedAuthFile) 'Renamed entrypoint without overrides should create .chief-smoke_auth.json.'
+        Assert-True (Test-Path $renamedDebugLog) 'Renamed entrypoint without overrides should create .chief-smoke_debug.log.'
+        Assert-True (-not (Test-Path $defaultAuthFile)) 'Renamed entrypoint without overrides should not create .cdo_auth.json.'
+
+        $renamedNoOverrideApprovalPost = Invoke-SmokeRequest -Url $renamedNoOverrideApprovalUrl -Method 'POST' -Headers @{
+            'Content-Type' = 'application/x-www-form-urlencoded'
+        } -Body 'approve=yes'
+        Assert-True ($renamedNoOverrideApprovalPost.StatusCode -eq 200) 'Renamed entrypoint approval without overrides should return 200.'
+
+        $defaultStatusWithRenamedToken = Invoke-JsonRpcTool -Url $defaultNoOverrideUrl -Id 19 -ToolName 'server_status' -BearerToken $renamedNoOverrideBearerToken -BearerHeaderName 'X-CDO-Bearer-Token'
+        $defaultStatusWithRenamedTokenJson = $defaultStatusWithRenamedToken.Content | ConvertFrom-Json
+        Assert-True (-not $defaultStatusWithRenamedTokenJson.result.structuredContent.authorized) 'Default entrypoint should not accept renamed entrypoint token.'
+        Assert-True (-not $defaultStatusWithRenamedTokenJson.result.structuredContent.authConfigured) 'Default entrypoint should not share renamed entrypoint auth state.'
+
+        $renamedEnvPathResponse = Invoke-JsonRpcTool -Url $renamedNoOverrideUrl -Id 20 -ToolName 'get_env_path' -BearerToken $renamedNoOverrideBearerToken -BearerHeaderName 'X-CDO-Bearer-Token'
+        $renamedEnvPathJson = $renamedEnvPathResponse.Content | ConvertFrom-Json
+        $renamedEnvPath = [string] $renamedEnvPathJson.result.structuredContent.envPath
+        $renamedRequestEnvUpload = Invoke-JsonRpcTool -Url $renamedNoOverrideUrl -Id 21 -ToolName 'request_env_upload' -BearerToken $renamedNoOverrideBearerToken -BearerHeaderName 'X-CDO-Bearer-Token'
+        $renamedRequestEnvUploadJson = $renamedRequestEnvUpload.Content | ConvertFrom-Json
+        Assert-True ($renamedRequestEnvUploadJson.result.structuredContent.status -eq 'pending_upload') 'Renamed entrypoint should request env upload without overrides.'
+        Assert-True (Test-Path $renamedEnvStateFile) 'Renamed entrypoint should create .chief-smoke_env.json.'
+        Assert-True (-not (Test-Path $defaultEnvStateFile)) 'Renamed entrypoint should not create .cdo_env.json.'
+
+        $defaultNoOverrideRequestAuth = Invoke-JsonRpcTool -Url $defaultNoOverrideUrl -Id 22 -ToolName 'request_auth' -Arguments @{
+            agentName = 'default-no-override-agent'
+        }
+        $defaultNoOverrideRequestAuthJson = $defaultNoOverrideRequestAuth.Content | ConvertFrom-Json
+        $defaultNoOverrideApprovalUrl = [string] $defaultNoOverrideRequestAuthJson.result.structuredContent.approvalUrl
+        $defaultNoOverrideBearerToken = [string] $defaultNoOverrideRequestAuthJson.result.structuredContent.bearerToken
+        $defaultNoOverrideApprovalPost = Invoke-SmokeRequest -Url $defaultNoOverrideApprovalUrl -Method 'POST' -Headers @{
+            'Content-Type' = 'application/x-www-form-urlencoded'
+        } -Body 'approve=yes'
+        Assert-True ($defaultNoOverrideApprovalPost.StatusCode -eq 200) 'Default entrypoint approval without overrides should return 200.'
+
+        $defaultEnvPathResponse = Invoke-JsonRpcTool -Url $defaultNoOverrideUrl -Id 23 -ToolName 'get_env_path' -BearerToken $defaultNoOverrideBearerToken -BearerHeaderName 'X-CDO-Bearer-Token'
+        $defaultEnvPathJson = $defaultEnvPathResponse.Content | ConvertFrom-Json
+        $defaultEnvPath = [string] $defaultEnvPathJson.result.structuredContent.envPath
+        Assert-True ($renamedEnvPath -ne $defaultEnvPath) 'Renamed and default entrypoints should use different env storage hashes in the same directory.'
+
+        $renamedListRoot = Invoke-JsonRpcTool -Url $renamedNoOverrideUrl -Id 24 -ToolName 'list_dir' -BearerToken $renamedNoOverrideBearerToken -BearerHeaderName 'X-CDO-Bearer-Token'
+        $renamedListRootJson = $renamedListRoot.Content | ConvertFrom-Json
+        $renamedRootEntryNames = @($renamedListRootJson.result.structuredContent.entries | ForEach-Object { [string] $_.name })
+        Assert-True (-not ($renamedRootEntryNames -contains '.chief-smoke_auth.json')) 'list_dir should hide renamed auth state files.'
+        Assert-True (-not ($renamedRootEntryNames -contains '.chief-smoke_env.json')) 'list_dir should hide renamed env state files.'
+        Assert-True (-not ($renamedRootEntryNames -contains '.chief-smoke_debug.log')) 'list_dir should hide renamed debug logs.'
+        Assert-True (-not ($renamedRootEntryNames -contains '.cdo_auth.json')) 'list_dir should hide default auth state files.'
+    } finally {
+        if ($renamedNoOverrideServerProcess -and -not $renamedNoOverrideServerProcess.HasExited) {
+            Stop-Process -Id $renamedNoOverrideServerProcess.Id -ErrorAction SilentlyContinue
+        }
+
+        $renamedNoOverrideServerProcess = $null
+        Remove-IfExists $defaultAuthFile
+        Remove-IfExists $defaultEnvStateFile
+        Remove-IfExists $defaultDebugLog
+        Remove-IfExists $renamedAuthFile
+        Remove-IfExists $renamedEnvStateFile
+        Remove-IfExists $renamedDebugLog
+    }
 
     $subdirHtml = Invoke-SmokeRequest -Url $subdirFileUrl -Method 'GET'
     Assert-True ($subdirHtml.StatusCode -eq 200) 'Subdirectory entrypoint should return 200.'
@@ -1322,6 +1422,10 @@ try {
 
     Write-Output 'Smoke OK'
 } finally {
+    if ($renamedNoOverrideServerProcess -and -not $renamedNoOverrideServerProcess.HasExited) {
+        Stop-Process -Id $renamedNoOverrideServerProcess.Id -ErrorAction SilentlyContinue
+    }
+
     if ($nestedServerProcess -and -not $nestedServerProcess.HasExited) {
         Stop-Process -Id $nestedServerProcess.Id -ErrorAction SilentlyContinue
     }
@@ -1356,6 +1460,12 @@ try {
     Remove-IfExists $nestedDebugLog
     Remove-IfExists $envSecretsRoot
     Remove-IfExists $renamedEntrypoint
+    Remove-IfExists $defaultAuthFile
+    Remove-IfExists $defaultEnvStateFile
+    Remove-IfExists $defaultDebugLog
+    Remove-IfExists $renamedAuthFile
+    Remove-IfExists $renamedEnvStateFile
+    Remove-IfExists $renamedDebugLog
     Remove-IfExists $subdirEntrypointDir
     Remove-IfExists $nestedDocrootDir
     Remove-IfExists $visibleDotFile
