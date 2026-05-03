@@ -522,6 +522,7 @@ function cdo_agent_guide_payload(string $endpointUrl): array
             'rename_path',
             'get_env_path',
             'request_env_upload',
+            'get_runtime_info',
         ],
         'operationRules' => [
             'The root is the directory that contains this endpoint file.',
@@ -534,6 +535,7 @@ function cdo_agent_guide_payload(string $endpointUrl): array
             'CDO does not permanently set operating system environment variables. Use get_env_path to obtain the production env file path, then update the application code to read that path.',
             'request_env_upload returns a one-time browser URL for a human user to upload an env file. The AI agent must not upload, read, download, inspect, or ask the user to paste env contents.',
             'The env file is placed outside the document root when available. If no safe outside-document-root path is available, use the hosting provider environment variables or Secrets settings instead.',
+            'Use get_runtime_info to inspect safe PHP runtime diagnostics, loaded extensions, and PHP directive changeability. It is not raw phpinfo() output and does not expose $_ENV, $_SERVER, headers, cookies, or environment variable values.',
         ],
         'timeoutHandling' => [
             'If a write/delete/rename tool call times out, Do not retry the same operation immediately.',
@@ -1354,6 +1356,220 @@ function cdo_request_env_upload_payload(): array
     ];
 }
 
+function cdo_runtime_scalar_value($value): ?string
+{
+    if ($value === null || $value === false) {
+        return null;
+    }
+
+    if (is_bool($value)) {
+        return $value ? '1' : '0';
+    }
+
+    if (is_scalar($value)) {
+        return (string) $value;
+    }
+
+    return null;
+}
+
+function cdo_runtime_ini_value(string $name): ?string
+{
+    $value = ini_get($name);
+
+    return cdo_runtime_scalar_value($value);
+}
+
+function cdo_runtime_scanned_ini_files(): array
+{
+    $scannedFiles = php_ini_scanned_files();
+
+    if (!is_string($scannedFiles) || trim($scannedFiles) === '') {
+        return [];
+    }
+
+    $files = preg_split('/,\s*/', $scannedFiles);
+
+    if (!is_array($files)) {
+        return [];
+    }
+
+    return array_values(array_filter(array_map('trim', $files), static function (string $file): bool {
+        return $file !== '';
+    }));
+}
+
+function cdo_runtime_user_ini_support(): array
+{
+    $filename = cdo_runtime_ini_value('user_ini.filename');
+    $cacheTtl = cdo_runtime_ini_value('user_ini.cache_ttl');
+    $filenameConfigured = is_string($filename) && trim($filename) !== '';
+    $supportedBySapi = in_array(PHP_SAPI, ['cgi-fcgi', 'fpm-fcgi'], true);
+    $likelySupported = $filenameConfigured && $supportedBySapi;
+    $reason = 'supported_by_sapi';
+
+    if (!$filenameConfigured) {
+        $reason = 'user_ini_filename_empty';
+    } elseif (!$supportedBySapi) {
+        $reason = 'unsupported_sapi_' . PHP_SAPI;
+    }
+
+    return [
+        'filename' => $filename,
+        'cacheTtl' => $cacheTtl,
+        'supportedBySapi' => $supportedBySapi,
+        'likelySupported' => $likelySupported,
+        'reason' => $reason,
+    ];
+}
+
+function cdo_runtime_htaccess_directive_support(): array
+{
+    $likelySupported = PHP_SAPI === 'apache2handler';
+
+    return [
+        'likelySupported' => $likelySupported,
+        'reason' => $likelySupported
+            ? 'current_sapi_is_apache2handler'
+            : 'current_sapi_is_' . PHP_SAPI . '_not_apache2handler',
+    ];
+}
+
+function cdo_runtime_ini_access_labels(int $access): array
+{
+    $labels = [];
+
+    if (($access & INI_USER) !== 0) {
+        $labels[] = 'INI_USER';
+    }
+
+    if (($access & INI_PERDIR) !== 0) {
+        $labels[] = 'INI_PERDIR';
+    }
+
+    if (($access & INI_SYSTEM) !== 0) {
+        $labels[] = 'INI_SYSTEM';
+    }
+
+    if ($access === INI_ALL) {
+        $labels[] = 'INI_ALL';
+    }
+
+    return $labels;
+}
+
+function cdo_runtime_directive_settable_via(int $access, bool $userIniLikelySupported, bool $htaccessLikelySupported): array
+{
+    return [
+        'iniSet' => ($access & INI_USER) !== 0,
+        'userIni' => $userIniLikelySupported && (($access & (INI_USER | INI_PERDIR)) !== 0),
+        'htaccess' => $htaccessLikelySupported && (($access & INI_PERDIR) !== 0),
+        'phpIni' => $access > 0,
+    ];
+}
+
+function cdo_runtime_directives_payload(array $userIniSupport, array $htaccessSupport): array
+{
+    $directives = ini_get_all(null, true);
+
+    if (!is_array($directives)) {
+        return [];
+    }
+
+    ksort($directives);
+    $payload = [];
+    $userIniLikelySupported = (bool) ($userIniSupport['likelySupported'] ?? false);
+    $htaccessLikelySupported = (bool) ($htaccessSupport['likelySupported'] ?? false);
+
+    foreach ($directives as $name => $directive) {
+        if (!is_string($name) || !is_array($directive)) {
+            continue;
+        }
+
+        $globalValue = cdo_runtime_scalar_value($directive['global_value'] ?? null);
+        $effectiveValue = cdo_runtime_scalar_value($directive['local_value'] ?? null);
+        $access = isset($directive['access']) && is_numeric($directive['access'])
+            ? (int) $directive['access']
+            : 0;
+
+        $payload[$name] = [
+            'globalValue' => $globalValue,
+            'effectiveValue' => $effectiveValue,
+            'overridden' => $globalValue !== $effectiveValue,
+            'accessRaw' => $access,
+            'accessLabels' => cdo_runtime_ini_access_labels($access),
+            'settableVia' => cdo_runtime_directive_settable_via(
+                $access,
+                $userIniLikelySupported,
+                $htaccessLikelySupported
+            ),
+        ];
+    }
+
+    return $payload;
+}
+
+function cdo_runtime_extension_capability_names(): array
+{
+    return [
+        'curl',
+        'json',
+        'mbstring',
+        'openssl',
+        'pdo',
+        'pdo_mysql',
+        'sqlite3',
+        'zip',
+        'zlib',
+        'gd',
+        'intl',
+        'xml',
+        'dom',
+        'fileinfo',
+        'ftp',
+    ];
+}
+
+function cdo_runtime_extensions_payload(): array
+{
+    $loadedExtensions = get_loaded_extensions();
+    sort($loadedExtensions, SORT_STRING | SORT_FLAG_CASE);
+    $capabilities = [];
+
+    foreach (cdo_runtime_extension_capability_names() as $extensionName) {
+        $capabilities[$extensionName] = extension_loaded($extensionName);
+    }
+
+    return [
+        'loaded' => array_values($loadedExtensions),
+        'capabilities' => $capabilities,
+    ];
+}
+
+function cdo_runtime_info_payload(): array
+{
+    $userIniSupport = cdo_runtime_user_ini_support();
+    $htaccessSupport = cdo_runtime_htaccess_directive_support();
+
+    return [
+        'php' => [
+            'version' => PHP_VERSION,
+            'versionId' => PHP_VERSION_ID,
+            'sapi' => PHP_SAPI,
+            'osFamily' => PHP_OS_FAMILY,
+            'os' => PHP_OS,
+        ],
+        'configurationFiles' => [
+            'loadedPhpIni' => cdo_runtime_scalar_value(php_ini_loaded_file()),
+            'scannedIniFiles' => cdo_runtime_scanned_ini_files(),
+        ],
+        'userIniSupport' => $userIniSupport,
+        'htaccessDirectiveSupport' => $htaccessSupport,
+        'directives' => cdo_runtime_directives_payload($userIniSupport, $htaccessSupport),
+        'extensions' => cdo_runtime_extensions_payload(),
+    ];
+}
+
 function cdo_refresh_auth_state(?array $state): ?array
 {
     if ($state === null) {
@@ -1973,6 +2189,39 @@ function cdo_get_request_env_upload_tool(): array
     ];
 }
 
+function cdo_get_runtime_info_tool(): array
+{
+    return [
+        'name' => 'get_runtime_info',
+        'title' => 'Get Runtime Info',
+        'description' => 'Return safe PHP runtime diagnostics, loaded extensions, and PHP directive changeability. This is not raw phpinfo() output and does not expose environment variables, headers, or cookies.',
+        'inputSchema' => [
+            'type' => 'object',
+            'properties' => new stdClass(),
+            'required' => [],
+        ],
+        'outputSchema' => [
+            'type' => 'object',
+            'properties' => [
+                'php' => ['type' => 'object'],
+                'configurationFiles' => ['type' => 'object'],
+                'userIniSupport' => ['type' => 'object'],
+                'htaccessDirectiveSupport' => ['type' => 'object'],
+                'directives' => ['type' => 'object'],
+                'extensions' => ['type' => 'object'],
+            ],
+            'required' => [
+                'php',
+                'configurationFiles',
+                'userIniSupport',
+                'htaccessDirectiveSupport',
+                'directives',
+                'extensions',
+            ],
+        ],
+    ];
+}
+
 function cdo_get_tools(array $authContext): array
 {
     $tools = cdo_get_public_tools();
@@ -1987,6 +2236,7 @@ function cdo_get_tools(array $authContext): array
         $tools[] = cdo_get_rename_path_tool();
         $tools[] = cdo_get_env_path_tool();
         $tools[] = cdo_get_request_env_upload_tool();
+        $tools[] = cdo_get_runtime_info_tool();
     }
 
     return $tools;
@@ -3331,6 +3581,32 @@ function cdo_handle_request(array $message): void
 
                 $payload = cdo_request_env_upload_payload();
                 cdo_jsonrpc_result($id, cdo_tool_result($payload['message'], $payload), 200, [
+                    'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                ]);
+                return;
+            }
+
+            if ($toolName === 'get_runtime_info') {
+                if (!$authContext['isAuthorized']) {
+                    $message = 'Authentication required. Use request_auth and then send Authorization: Bearer <token> or X-CDO-Bearer-Token: <token>.';
+
+                    if (($authContext['state']['state'] ?? null) === 'locked') {
+                        $message = (string) ($authContext['state']['message'] ?? 'Authentication is locked.');
+                    }
+
+                    cdo_jsonrpc_error($id, -32001, $message, 200, [
+                        'reason' => $authContext['reason'],
+                    ], [
+                        'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                    ]);
+                    return;
+                }
+
+                $payload = cdo_runtime_info_payload();
+                cdo_jsonrpc_result($id, cdo_tool_result(
+                    'Returned safe PHP runtime diagnostics. This is not raw phpinfo() output.',
+                    $payload
+                ), 200, [
                     'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
                 ]);
                 return;

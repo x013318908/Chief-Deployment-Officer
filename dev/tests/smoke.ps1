@@ -706,6 +706,7 @@ try {
     Assert-True (-not ($toolNames -contains 'rename_path')) 'tools/list should not expose rename_path before auth.'
     Assert-True (-not ($toolNames -contains 'get_env_path')) 'tools/list should not expose get_env_path before auth.'
     Assert-True (-not ($toolNames -contains 'request_env_upload')) 'tools/list should not expose request_env_upload before auth.'
+    Assert-True (-not ($toolNames -contains 'get_runtime_info')) 'tools/list should not expose get_runtime_info before auth.'
 
     $unauthorizedListDir = Invoke-JsonRpcTool -Url $mcpUrl -Id 4 -ToolName 'list_dir'
     Assert-True ($unauthorizedListDir.StatusCode -eq 200) 'Unauthorized list_dir should still return JSON-RPC.'
@@ -770,6 +771,11 @@ try {
     $unauthorizedRequestEnvUploadJson = $unauthorizedRequestEnvUpload.Content | ConvertFrom-Json
     Assert-True ($unauthorizedRequestEnvUploadJson.error.code -eq -32001) 'Unauthorized request_env_upload should return an auth error.'
 
+    $unauthorizedRuntimeInfo = Invoke-JsonRpcTool -Url $mcpUrl -Id 120 -ToolName 'get_runtime_info'
+    Assert-True ($unauthorizedRuntimeInfo.StatusCode -eq 200) 'Unauthorized get_runtime_info should still return JSON-RPC.'
+    $unauthorizedRuntimeInfoJson = $unauthorizedRuntimeInfo.Content | ConvertFrom-Json
+    Assert-True ($unauthorizedRuntimeInfoJson.error.code -eq -32001) 'Unauthorized get_runtime_info should return an auth error.'
+
     $serverStatusBeforeAuth = Invoke-JsonRpcTool -Url $mcpUrl -Id 40 -ToolName 'server_status'
     $serverStatusBeforeAuthJson = $serverStatusBeforeAuth.Content | ConvertFrom-Json
     $serverStatusBeforeAuthData = $serverStatusBeforeAuthJson.result.structuredContent
@@ -788,6 +794,8 @@ try {
     Assert-True ($serverStatusBeforeAuth.Content.Contains('Rename overwrite/replace is not implemented')) 'server_status agentGuide should document rename replacement limitations.'
     Assert-True ($serverStatusBeforeAuth.Content.Contains('get_env_path')) 'server_status agentGuide should mention env path tools.'
     Assert-True ($serverStatusBeforeAuth.Content.Contains('request_env_upload')) 'server_status agentGuide should mention env upload tools.'
+    Assert-True ($serverStatusBeforeAuth.Content.Contains('get_runtime_info')) 'server_status agentGuide should mention runtime info tools.'
+    Assert-True ($serverStatusBeforeAuth.Content.Contains('phpinfo()')) 'server_status agentGuide should explain runtime info is not raw phpinfo output.'
     Assert-True ($serverStatusBeforeAuth.Content.Contains('operating system environment variables')) 'server_status agentGuide should explain that CDO does not set OS environment variables.'
 
     $contextHint = 'Codex desktop / smoke auth thread / 2026-04-28'
@@ -884,6 +892,7 @@ try {
     Assert-True ($toolNamesAuthorized -contains 'rename_path') 'Authorized tools/list should expose rename_path.'
     Assert-True ($toolNamesAuthorized -contains 'get_env_path') 'Authorized tools/list should expose get_env_path.'
     Assert-True ($toolNamesAuthorized -contains 'request_env_upload') 'Authorized tools/list should expose request_env_upload.'
+    Assert-True ($toolNamesAuthorized -contains 'get_runtime_info') 'Authorized tools/list should expose get_runtime_info.'
     $envToolNamesAuthorized = @($toolNamesAuthorized | Where-Object { $_ -like '*env*' })
     Assert-True ($envToolNamesAuthorized.Count -eq 2) 'Authorized tools/list should expose exactly two env tools.'
 
@@ -898,6 +907,44 @@ try {
     Assert-True ($serverStatusAfterAuthData.contextHint -eq $contextHint) 'Authenticated server_status should expose safe context hint metadata.'
 
     $envSecretText = 'CDO_SMOKE_SECRET=super-secret-env-value'
+    $runtimeInfo = Invoke-JsonRpcTool -Url $mcpUrl -Id 126 -ToolName 'get_runtime_info' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token'
+    $runtimeInfoJson = $runtimeInfo.Content | ConvertFrom-Json
+    $runtimeInfoData = $runtimeInfoJson.result.structuredContent
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string] $runtimeInfoData.php.version)) 'get_runtime_info should return PHP version.'
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string] $runtimeInfoData.php.sapi)) 'get_runtime_info should return PHP SAPI.'
+    Assert-True (-not [string]::IsNullOrWhiteSpace([string] $runtimeInfoData.php.osFamily)) 'get_runtime_info should return PHP OS family.'
+    Assert-True ($null -ne $runtimeInfoData.configurationFiles) 'get_runtime_info should return configuration file metadata.'
+    Assert-True ($null -ne $runtimeInfoData.userIniSupport) 'get_runtime_info should return user.ini support metadata.'
+    Assert-True ($null -ne $runtimeInfoData.htaccessDirectiveSupport) 'get_runtime_info should return .htaccess directive support metadata.'
+    Assert-True ($null -ne $runtimeInfoData.directives) 'get_runtime_info should return PHP directives.'
+    Assert-True ($null -ne $runtimeInfoData.extensions) 'get_runtime_info should return extension metadata.'
+    Assert-True ($runtimeInfoData.extensions.loaded.Count -gt 0) 'get_runtime_info should return loaded extension names.'
+    $runtimeDirectiveNames = @($runtimeInfoData.directives.PSObject.Properties | ForEach-Object { [string] $_.Name })
+    foreach ($runtimeDirectiveName in @('memory_limit', 'upload_max_filesize', 'post_max_size', 'open_basedir', 'disable_functions')) {
+        if ($runtimeDirectiveNames -contains $runtimeDirectiveName) {
+            $runtimeDirective = $runtimeInfoData.directives.$runtimeDirectiveName
+            $runtimeDirectiveProps = @($runtimeDirective.PSObject.Properties | ForEach-Object { [string] $_.Name })
+            Assert-True ($runtimeDirectiveProps -contains 'effectiveValue') "get_runtime_info should return effectiveValue for $runtimeDirectiveName."
+            Assert-True ($runtimeDirectiveProps -contains 'globalValue') "get_runtime_info should return globalValue for $runtimeDirectiveName."
+            Assert-True ($runtimeDirectiveProps -contains 'overridden') "get_runtime_info should return overridden for $runtimeDirectiveName."
+            Assert-True ($runtimeDirectiveProps -contains 'accessRaw') "get_runtime_info should return accessRaw for $runtimeDirectiveName."
+            Assert-True ($runtimeDirectiveProps -contains 'accessLabels') "get_runtime_info should return accessLabels for $runtimeDirectiveName."
+            Assert-True ($runtimeDirectiveProps -contains 'settableVia') "get_runtime_info should return settableVia for $runtimeDirectiveName."
+        }
+    }
+    $runtimeCapabilityNames = @($runtimeInfoData.extensions.capabilities.PSObject.Properties | ForEach-Object { [string] $_.Name })
+    foreach ($runtimeCapabilityName in @('curl', 'json', 'mbstring', 'openssl', 'pdo', 'pdo_mysql', 'zip')) {
+        Assert-True ($runtimeCapabilityNames -contains $runtimeCapabilityName) "get_runtime_info should return the $runtimeCapabilityName capability."
+        Assert-True (($runtimeInfoData.extensions.capabilities.$runtimeCapabilityName -eq $true) -or ($runtimeInfoData.extensions.capabilities.$runtimeCapabilityName -eq $false)) "get_runtime_info should return a boolean $runtimeCapabilityName capability."
+    }
+    Assert-True (-not $runtimeInfo.Content.Contains('$_ENV')) 'get_runtime_info should not expose $_ENV.'
+    Assert-True (-not $runtimeInfo.Content.Contains('$_SERVER')) 'get_runtime_info should not expose $_SERVER.'
+    Assert-True (-not $runtimeInfo.Content.Contains('HTTP_COOKIE')) 'get_runtime_info should not expose cookie headers.'
+    Assert-True (-not $runtimeInfo.Content.Contains('Authorization')) 'get_runtime_info should not expose Authorization headers.'
+    Assert-True (-not $runtimeInfo.Content.Contains($bearerToken)) 'get_runtime_info should not expose the bearer token.'
+    Assert-True (-not $runtimeInfo.Content.Contains($approvalSecret)) 'get_runtime_info should not expose the approval secret.'
+    Assert-True (-not $runtimeInfo.Content.Contains($envSecretText)) 'get_runtime_info should not expose env contents.'
+
     $getEnvPath = Invoke-JsonRpcTool -Url $mcpUrl -Id 121 -ToolName 'get_env_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token'
     $getEnvPathJson = $getEnvPath.Content | ConvertFrom-Json
     $getEnvPathData = $getEnvPathJson.result.structuredContent
