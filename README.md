@@ -1,32 +1,34 @@
 # Chief-Deployment-Officer
 
-PHP単一ファイルで配布するChief-Deployment-Officerの開発用土台です。
+[日本語版 README](README.ja.md)
 
-このREADMEは、`cdo.php` を開発・配布する人と、実装内容を把握したいAIエージェント向けです。承認操作をするユーザー向けの案内は、配置済み `cdo.php` のブラウザ画面と承認画面に集約します。
+Chief-Deployment-Officer is a development foundation for a PHP single-file deployment tool.
 
-現時点では、1エージェント限定の承認型認証と最小のファイル操作ツールまで入れています。
+This README is for people who develop or distribute `cdo.php`, and for AI agents that need to understand the implementation. User-facing approval guidance is kept in the deployed `cdo.php` browser page and approval screens.
 
-- 本番想定のエントリポイント: `public_html/cdo.php`
-- 開発補助: `composer serve`, `composer lint`, `composer test`, `composer qa`
-- MCP疎通確認用: `npm run mcp:inspect`
-- 実装済みMCPメソッド: `ping`, `initialize`, `tools/list`, `tools/call`
-- 公開ツール: `server_status`, `request_auth`
-- 保護ツール: `list_dir`, `read_file`, `write_file`, `create_dir`, `delete_file`, `delete_dir`, `rename_path`, `get_env_path`, `request_env_upload`, `get_runtime_info`
+The current implementation includes single-agent approval-based authentication and a minimal set of file operation tools.
 
-## 前提
+- Production entrypoint: `public_html/cdo.php`
+- Development helpers: `composer serve`, `composer lint`, `composer test`, `composer qa`
+- MCP connectivity check: `npm run mcp:inspect`
+- Implemented MCP methods: `ping`, `initialize`, `tools/list`, `tools/call`
+- Public tools: `server_status`, `request_auth`
+- Protected tools: `list_dir`, `read_file`, `write_file`, `create_dir`, `delete_file`, `delete_dir`, `rename_path`, `get_env_path`, `request_env_upload`, `get_runtime_info`
 
-- PHP 7.4+ を本番対象に想定
-- ローカル確認は PHP 8.5 系で実施
-- Node.js 22.7.5+ があると MCP Inspector を使えます
+## Requirements
 
-## セットアップ
+- PHP 7.4+ is the production target.
+- Local verification currently uses PHP 8.5.
+- Node.js 22.7.5+ is useful for MCP Inspector.
+
+## Setup
 
 ```powershell
 composer install
 npm install
 ```
 
-## よく使うコマンド
+## Common Commands
 
 ```powershell
 composer serve
@@ -34,181 +36,181 @@ composer qa
 npm run mcp:inspect
 ```
 
-`composer serve` は長時間起動のままで使う想定なので、Composer の process timeout は無効化しています。
+`composer serve` is intended to stay running for development, so Composer's process timeout is disabled for that command.
 
-`composer serve` の後は、ブラウザ確認なら `http://127.0.0.1:8787/` を開けます。
+After `composer serve`, open `http://127.0.0.1:8787/` for browser checks.
 
-MCP endpoint は次のどちらでも使えます。
+The MCP endpoint can be either of the following.
 
-- 推奨: `http://127.0.0.1:8787/mcp`
-- 実ファイル直指定: `http://127.0.0.1:8787/cdo.php`
+- Recommended: `http://127.0.0.1:8787/mcp`
+- Direct file path: `http://127.0.0.1:8787/cdo.php`
 
-ブラウザまたはAIエージェントが `cdo.php` にアクセスすると、MCP endpoint、認証状態、承認済みエージェント情報、危険操作の注意をまとめた案内ページを表示します。この画面はユーザー向けセクションを先に、AIエージェント向けセクションを後に表示します。
+When a browser or AI agent accesses `cdo.php`, it shows a guidance page with the MCP endpoint, authentication state, approved-agent metadata, and dangerous-operation notes. The page shows the user section first and the AI-agent section second.
 
-AIエージェントにリモートの `cdo.php` URL を渡す場合は、そのURL自体を MCP endpoint としてそのまま使わせてください。AIエージェント側ではローカルリポジトリや別パスを推測せず、まず配置済みページのAI向けセクションを読むか、`server_status` の `agentGuide` を確認します。そのうえで `tools/list`、次に `server_status`、必要なら `request_auth` の順に呼びます。
+When giving a remote `cdo.php` URL to an AI agent, tell it to use that exact URL as the MCP endpoint. The agent should not guess a local repository path or alternate URL. It should first read the deployed page's AI section or call `server_status` and inspect `agentGuide`, then call `tools/list`, then `server_status`, then `request_auth` if needed.
 
-`/sse` は dev router で `cdo.php` に流れますが、SSE transport 自体は未実装です。MCP Inspector では Streamable HTTP を選び、URL は `/mcp` か `/cdo.php` を指定してください。
+`/sse` is routed to `cdo.php` by the development router, but SSE transport itself is not implemented. In MCP Inspector, choose Streamable HTTP and use either `/mcp` or `/cdo.php`.
 
-現時点の認証は OAuth/OIDC ではありません。`/.well-known/oauth-protected-resource` などの discovery endpoint も未実装です。MCP Inspector の OAuth フローは使わず、`request_auth` で発行された token を手動でヘッダー設定してください。
+Authentication is not OAuth/OIDC. Discovery endpoints such as `/.well-known/oauth-protected-resource` are not implemented. Do not use MCP Inspector's OAuth flow; manually configure the token returned by `request_auth` as a header.
 
-## ファイル名変更と認証上の注意
+## File Renaming And Authentication Notes
 
-`public_html/cdo.php` は任意の `.php` ファイル名に変更しても動く前提です。公開環境では `cdo` 部分を推測されにくい名前へ変更し、MCP endpoint URL も変更後のファイル名で指定してください。
+`public_html/cdo.php` is expected to work after being renamed to any `.php` filename. In production, rename the `cdo` portion to a hard-to-guess name and use the renamed filename in the MCP endpoint URL.
 
-この認証フローは「ユーザーが承認した1エージェントだけに Bearer token を渡す」ための最小防御です。ファイル名変更は機械的な探索を減らす運用上の補助であり、単独の防御策として扱わないでください。
+This authentication flow is the minimum defense for giving a bearer token to one user-approved agent. Renaming the file only reduces mechanical discovery and must not be treated as a standalone security boundary.
 
-## 本番配置前チェック
+## Pre-Production Checklist
 
-- HTTPS環境で使ってください。HTTPでは bearer token と承認URLが盗聴されるリスクがあります
-- `cdo.php` は推測されにくいPHPファイル名に変更し、MCP endpoint URL も変更後のファイル名で指定してください
-- サーバー側でIP制限、Basic認証、管理画面配下配置などの追加アクセス制限を検討してください
-- `write_file`, `delete_file`, `delete_dir`, `rename_path` を使う前に、対象ディレクトリのバックアップを取ってください
-- 不要になった認証は、配置先ディレクトリの関連認証ファイルを削除してリセットしてください。例: `cdo.php` は `.cdo_auth.json`, `agent-a.php` は `.agent-a_auth.json`
-- `.*_auth.json`, `.*_env.json`, `.*_debug.log` は公開配布物・共有物に含めないでください
-- 未認証のCDOファイルを公開サーバーに置いたまま放置しないでください。使わないコピーは削除してください
+- Use HTTPS. On HTTP, bearer tokens and approval URLs can be intercepted.
+- Rename `cdo.php` to a hard-to-guess PHP filename, and use the renamed filename in the MCP endpoint URL.
+- Consider additional server-side access controls such as IP restrictions, Basic authentication, or placing the file under a management-only path.
+- Back up the target directory before using `write_file`, `delete_file`, `delete_dir`, or `rename_path`.
+- To reset an approval, delete the related authentication file in the deployment directory. Example: `cdo.php` uses `.cdo_auth.json`; `agent-a.php` uses `.agent-a_auth.json`.
+- Do not include `.*_auth.json`, `.*_env.json`, or `.*_debug.log` in public distributions or shared files.
+- Do not leave unused unauthenticated CDO files on a public server. Delete unused copies.
 
-## 複数エージェントで使う場合
+## Multiple Agents
 
-Chief-Deployment-Officer は `1ファイル=1エージェント認証` の運用を前提にします。関連ファイルはエントリポイントのファイル名に連動するため、同じディレクトリに `agent-a.php`, `agent-b.php` のような別名コピーを置いても別認証状態として扱われます。
+Chief-Deployment-Officer uses a `1 file = 1 agent authorization` operating model. Related files are tied to the entrypoint filename, so separate copies such as `agent-a.php` and `agent-b.php` in the same directory have separate authentication states.
 
-例: `cdo.php` は `.cdo_auth.json`, `.cdo_env.json`, `.cdo_debug.log` を使い、`agent-a.php` は `.agent-a_auth.json`, `.agent-a_env.json`, `.agent-a_debug.log` を使います。env保存先のhashもファイル名を含めて分かれます。サブディレクトリに置いたコピーも、そのコピー自身のパスとMCP endpointを表示します。1つのCDOファイルの中で複数エージェントを管理する機能は追加しません。
+Example: `cdo.php` uses `.cdo_auth.json`, `.cdo_env.json`, and `.cdo_debug.log`; `agent-a.php` uses `.agent-a_auth.json`, `.agent-a_env.json`, and `.agent-a_debug.log`. The env storage hash also includes the filename, so env storage is separated as well. Copies in subdirectories also display their own path and MCP endpoint. CDO does not add multi-agent management inside a single file.
 
-## 認証フロー
+## Authentication Flow
 
-1. 未認証の状態で `request_auth` を呼びます。
-2. 応答の `approvalUrl` をブラウザで開き、ユーザーが `承認する` を押します。
-3. 同じ応答に含まれる `bearerToken` を `X-CDO-Bearer-Token: ...` で送ると、保護ツールが使えます。
+1. Call `request_auth` while unauthenticated.
+2. Open the returned `approvalUrl` in a browser, then the user presses `Approve`.
+3. Send the returned `bearerToken` with `X-CDO-Bearer-Token: ...` to use protected tools.
 
-`request_auth` には任意で `agentName` と `contextHint` を渡せます。`contextHint` は、あとでユーザーが承認した対話スレッドを探すための短い手がかりです。例: `Codex desktop / Chief-Deployment-Officer release thread / 2026-04-28`。秘密情報やtokenは入れないでください。
+`request_auth` accepts optional `agentName` and `contextHint`. `contextHint` is a short clue to help the user find the conversation that requested approval later. Example: `Codex desktop / Chief-Deployment-Officer release thread / 2026-04-28`. Do not include secrets or tokens.
 
-承認画面と承認完了画面はユーザー向けです。AIエージェントは `request_auth` の応答に含まれる `approvalUrl` をユーザーに提示し、「開いて承認したら知らせてください」と伝えます。同じ応答に含まれる `bearerToken` はAIエージェント側で保持し、ユーザーに貼り返してもらわない運用にしてください。承認後は `X-CDO-Bearer-Token: <bearerToken>` を付けて `server_status` を再確認します。
+The approval screen and approval-complete screen are for users. The AI agent should give the `approvalUrl` from `request_auth` to the user and say: "Open this URL and tell me when approval is complete." The `bearerToken` from the same response should be kept by the AI agent; do not ask the user to paste it back. After approval, send `X-CDO-Bearer-Token: <bearerToken>` and call `server_status` again.
 
-MCP Inspector では `Authentication` パネルの custom headers に `X-CDO-Bearer-Token: <bearerToken>` を追加してください。`Authorization: Bearer ...` も受け付けますが、Inspector では専用ヘッダーのほうが切り分けしやすいです。
+In MCP Inspector, add `X-CDO-Bearer-Token: <bearerToken>` to the `Authentication` panel's custom headers. `Authorization: Bearer ...` is also accepted, but the dedicated header is easier to debug in Inspector.
 
-認証状態は既定ではエントリポイントと同じディレクトリの関連認証ファイルに保存されます。`cdo.php` なら `.cdo_auth.json`, `agent-a.php` なら `.agent-a_auth.json` です。削除すると新しいエージェントを承認できます。
-認証デバッグログもファイル名に連動し、`cdo.php` なら `.cdo_debug.log`, `agent-a.php` なら `.agent-a_debug.log` に JSON Lines で追記されます。
+By default, authentication state is stored in the related auth file next to the entrypoint. `cdo.php` uses `.cdo_auth.json`; `agent-a.php` uses `.agent-a_auth.json`. Deleting that file allows a new agent to be approved.
+Authentication debug logs are also tied to the filename. `cdo.php` uses `.cdo_debug.log`; `agent-a.php` uses `.agent-a_debug.log`, written as JSON Lines.
 
-## デバッグ
+## Debugging
 
-`server_status` は接続確認だけでなく、現在の認証判定も返します。特に次の項目で切り分けできます。
+`server_status` returns both connectivity metadata and the current authentication decision. These fields are especially useful.
 
-- `endpoint`: 現在のリクエストから組み立てた MCP endpoint URL
-- `agentGuide`: AIエージェント向けの接続手順、認証手順、env配置方針、危険操作ルール、timeout時の確認手順
-- `authorizationHeaderPresent`: Authorization ヘッダーがサーバーに届いたか
-- `inspectorBearerHeaderPresent`: `X-CDO-Bearer-Token` ヘッダーがサーバーに届いたか
-- `authorized`: 現在のリクエストが承認済みとして通ったか
-- `authReason`: `missing_state`, `missing_token`, `invalid_token`, `authorized` などの理由
-- `bearerHeaderSource`: 実際に採用したヘッダー名
-- `agentName`, `contextHint`, `approvedAt`, `lastUsedAt`: どのAIエージェントにいつ承認したかの確認情報
+- `endpoint`: MCP endpoint URL constructed from the current request.
+- `agentGuide`: AI-agent guidance for connection, authentication, env placement, dangerous operations, and timeout handling.
+- `authorizationHeaderPresent`: whether the Authorization header reached the server.
+- `inspectorBearerHeaderPresent`: whether the `X-CDO-Bearer-Token` header reached the server.
+- `authorized`: whether the current request is accepted as authorized.
+- `authReason`: reason such as `missing_state`, `missing_token`, `invalid_token`, or `authorized`.
+- `bearerHeaderSource`: the header name actually used.
+- `agentName`, `contextHint`, `approvedAt`, `lastUsedAt`: safe metadata for checking which AI agent was approved and when.
 
-Inspector で保護ツールが見えない場合は、まず `server_status` を呼んで上記項目を見てください。そのうえで配置先ディレクトリの関連debug logを開くと、`tools/list` と `auth_context` の判定履歴が確認できます。
+If protected tools are not visible in Inspector, first call `server_status` and inspect those fields. Then open the related debug log in the deployment directory to see `tools/list` and `auth_context` decision history.
 
-開発やテストで状態ファイルを分離したい場合は、`CDO_AUTH_STATE_PATH`, `CDO_ENV_STATE_PATH`, `CDO_DEBUG_LOG_PATH` で保存先を上書きできます。
+For development and tests, override state file paths with `CDO_AUTH_STATE_PATH`, `CDO_ENV_STATE_PATH`, and `CDO_DEBUG_LOG_PATH`.
 
 ## get_runtime_info
 
-`get_runtime_info` は承認済みエージェント向けの安全化したruntime診断です。生の `phpinfo()` HTML、`$_ENV`, `$_SERVER` 全量、headers、cookies、環境変数値は返しません。
+`get_runtime_info` is a safe runtime diagnostic tool for approved agents. It does not return raw `phpinfo()` HTML, full `$_ENV`, full `$_SERVER`, headers, cookies, or environment variable values.
 
-返す情報は、PHPのバージョン/SAPI/OS、読み込まれた `php.ini` と追加iniファイル、`.user.ini` と `.htaccess` でPHPディレクティブを変更できる見込み、`ini_get_all(null, true)` を整形した全ディレクティブ、読み込み済み拡張一覧、主要拡張の有無です。
+It returns PHP version/SAPI/OS, loaded `php.ini` and scanned ini files, likely `.user.ini` and `.htaccess` PHP directive support, all PHP directives from formatted `ini_get_all(null, true)`, loaded extensions, and major extension capability flags.
 
-ディレクティブごとに `globalValue`, `effectiveValue`, `overridden`, `accessRaw`, `accessLabels`, `settableVia` を返します。`.user.ini` と `.htaccess` の可否はPHP SAPIと関連ini値からの見込みであり、ホスティング会社の `AllowOverride` などサーバー側設定までは断定しません。
+Each directive includes `globalValue`, `effectiveValue`, `overridden`, `accessRaw`, `accessLabels`, and `settableVia`. `.user.ini` and `.htaccess` support are estimates based on PHP SAPI and related ini values; CDO does not claim to know hosting-provider settings such as `AllowOverride`.
 
-## 危険操作の運用ルール
+## Dangerous Operation Rules
 
-- `write_file`, `delete_file`, `delete_dir`, `rename_path` は承認済みエージェントだけに使わせてください
-- 削除・リネーム前には `list_dir` / `read_file` で対象パスと内容を確認してください
-- `confirm: true` は、ユーザーが対象と操作内容を確認した後だけ付けてください
-- 書込・削除・リネームのtool callがtimeoutした場合、AIエージェントは同じ操作を即時再実行せず、まず `server_status`、次に `list_dir` / `read_file` で反映状態を確認してください
-- 反映済みなら成功扱いにし、未反映ならユーザーに確認してから再実行してください
-- `delete_dir` は空ディレクトリのみ対応します。再帰削除は実装していません
-- `rename_path` は宛先が既に存在する場合は拒否します。リネーム時の上書き・置換は実装していません
-- `request_env_upload` は人間向けブラウザURLだけを発行します。AIエージェントにenv本文を貼らせたり、MCP経由でアップロードさせたりしないでください
+- Only approved agents should use `write_file`, `delete_file`, `delete_dir`, and `rename_path`.
+- Before delete or rename, verify the target path and contents with `list_dir` / `read_file`.
+- Add `confirm: true` only after the user has confirmed the target and operation.
+- If a write/delete/rename tool call times out, the AI agent must not immediately retry the same operation. First call `server_status`, then use `list_dir` / `read_file` to confirm whether the change was applied.
+- If the change is already applied, treat it as success. If not, ask the user before retrying.
+- `delete_dir` only supports empty directories. Recursive delete is not implemented.
+- `rename_path` rejects existing destinations. Rename overwrite/replace is not implemented.
+- `request_env_upload` only issues a browser URL for a human user. Do not ask the AI agent to paste env contents, and do not upload env contents through MCP.
 
 ## list_dir
 
-- ルートは `cdo.php` の配置ディレクトリです
-- `path` の既定値は `.` です
-- 返すのは直下エントリだけで、再帰しません
-- `.cdo_*` は内部制御ファイルとして一覧から除外します
-- 一般の dotfile は除外しません
+- The root is the directory containing `cdo.php`.
+- The default `path` is `.`.
+- It returns direct children only; it is not recursive.
+- `.cdo_*` is treated as internal control data and excluded from listings.
+- Regular dotfiles are not excluded.
 
 ## read_file
 
-- ルートは `cdo.php` の配置ディレクトリです
-- `path` は必須で、絶対パスと `..` は拒否します
-- `.cdo_*` で始まる内部制御ファイルは読み取り対象外です
-- `maxBytes` で読み取り上限を指定できます。上限は `1048576` bytes です
-- UTF-8として読める内容はそのまま返し、バイナリは base64 で返します
+- The root is the directory containing `cdo.php`.
+- `path` is required. Absolute paths and `..` are rejected.
+- Internal control files beginning with `.cdo_*` are not readable.
+- `maxBytes` controls the read limit. The maximum is `1048576` bytes.
+- UTF-8 text is returned directly; binary content is returned as base64.
 
 ## write_file
 
-- ルートは `cdo.php` の配置ディレクトリです
-- `path`, `content`, `encoding` は必須で、`encoding` は `utf-8` または `base64` です
-- 既存ファイルは `overwrite: true` がない限り拒否します
-- `overwrite: true` で既存ファイルを上書きする場合、既存ファイルのパーミッションを維持します
-- 新規ファイル作成時のパーミッションは固定値ではなく、サーバーの `umask` に従う通常作成相当の `0666 & ~umask()` です
-- 親ディレクトリは暗黙作成しません。必要な場合は先に `create_dir` を呼びます
-- 絶対パス、`..`, `.cdo_*` 内部制御ファイル、現在のエントリポイントファイル自身への書き込みは拒否します
+- The root is the directory containing `cdo.php`.
+- `path`, `content`, and `encoding` are required. `encoding` must be `utf-8` or `base64`.
+- Existing files are rejected unless `overwrite: true` is provided.
+- When `overwrite: true` overwrites an existing file, the existing file permissions are preserved.
+- New file permissions are not fixed; they follow normal creation semantics, equivalent to `0666 & ~umask()`.
+- Parent directories are not created implicitly. Call `create_dir` first when needed.
+- Absolute paths, `..`, `.cdo_*` internal control files, and the current entrypoint file itself are rejected.
 
 ## create_dir
 
-- ルートは `cdo.php` の配置ディレクトリです
-- `path` は必須で、絶対パスと `..` は拒否します
-- `recursive: true` の場合だけ親ディレクトリも作成します
-- 既存パスがディレクトリなら成功扱い、ファイルなら拒否します
-- `.cdo_*` 内部制御ファイル名と現在のエントリポイントファイル自身は作成対象外です
+- The root is the directory containing `cdo.php`.
+- `path` is required. Absolute paths and `..` are rejected.
+- Parent directories are created only when `recursive: true` is provided.
+- If the path already exists as a directory, the operation succeeds. If it exists as a file, the operation is rejected.
+- `.cdo_*` internal control names and the current entrypoint file itself are rejected.
 
 ## delete_file
 
-- ルートは `cdo.php` の配置ディレクトリです
-- `path` と `confirm: true` は必須です
-- 絶対パス、`..`, `.cdo_*` 内部制御ファイル、現在のエントリポイントファイル自身は拒否します
-- ディレクトリは削除できません。ディレクトリ削除には `delete_dir` を使います
+- The root is the directory containing `cdo.php`.
+- `path` and `confirm: true` are required.
+- Absolute paths, `..`, `.cdo_*` internal control files, and the current entrypoint file itself are rejected.
+- Directories cannot be deleted with this tool. Use `delete_dir` for directories.
 
 ## delete_dir
 
-- ルートは `cdo.php` の配置ディレクトリです
-- `path` と `confirm: true` は必須です
-- 空ディレクトリのみ削除できます。非空ディレクトリとファイルは拒否します
-- 再帰削除は実装していません
-- 絶対パス、`..`, `.cdo_*` 内部制御ファイル、現在のエントリポイントファイル自身は拒否します
+- The root is the directory containing `cdo.php`.
+- `path` and `confirm: true` are required.
+- Only empty directories can be deleted. Non-empty directories and files are rejected.
+- Recursive delete is not implemented.
+- Absolute paths, `..`, `.cdo_*` internal control files, and the current entrypoint file itself are rejected.
 
 ## rename_path
 
-- ルートは `cdo.php` の配置ディレクトリです
-- `from`, `to`, `confirm: true` は必須です
-- ファイルとディレクトリの名前変更・移動に対応します
-- 宛先が既に存在する場合は常に拒否し、上書きや置換はしません
-- 宛先の親ディレクトリは暗黙作成しません
-- 移動元・移動先とも、絶対パス、`..`, `.cdo_*` 内部制御ファイル、現在のエントリポイントファイル自身は拒否します
+- The root is the directory containing `cdo.php`.
+- `from`, `to`, and `confirm: true` are required.
+- Files and directories can be renamed or moved.
+- Existing destinations are always rejected; overwrite/replace is not implemented.
+- Destination parent directories are not created implicitly.
+- Both source and destination reject absolute paths, `..`, `.cdo_*` internal control files, and the current entrypoint file itself.
 
-## production.env / Secrets配置MVP
+## production.env / Secrets Placement MVP
 
-CDOはOS環境変数を恒久設定しません。共有サーバーでは、PHPリクエスト中の `putenv()` で親プロセスや将来のリクエストの環境変数を変更できないためです。
+CDO does not permanently set OS environment variables. On shared hosting, `putenv()` during a PHP request cannot change the parent process or future requests.
 
-代わりに、公開領域の外に本番用envファイルを1つだけ配置します。`DOCUMENT_ROOT` の祖先に `public_html` がある場合は、その `public_html` の1つ上に `.cdo-secrets/{cdo_app_root_hash}/production.env` を置きます。`public_html` が見つからない場合は、`DOCUMENT_ROOT` の1つ上を使います。`cdo_app_root_hash` は配置ディレクトリとエントリポイントファイル名から作るため、同じディレクトリ内の別名CDOでも保存先が分かれます。候補一覧は返さず、CDOが単一の `envPath` を決めます。
+Instead, CDO places one production env file outside the public web area. If a `public_html` ancestor exists above `DOCUMENT_ROOT`, CDO places `.cdo-secrets/{cdo_app_root_hash}/production.env` one level above that `public_html`. If no `public_html` ancestor is found, CDO uses one level above `DOCUMENT_ROOT`. `cdo_app_root_hash` is derived from the placement directory and entrypoint filename, so renamed CDO copies in the same directory get separate storage. CDO returns a single chosen `envPath`, not a candidate list.
 
-- `get_env_path`: `envPath`, `available`, `uploaded`, `uploadedAt`, `outsideDocumentRoot`, `readableByPhp`, `writable`, `reason` だけを返します
-- `request_env_upload`: 10分有効・1回限りのブラウザ用アップロードURLを発行します。既存の未使用URLは破棄されます
+- `get_env_path`: returns only `envPath`, `available`, `uploaded`, `uploadedAt`, `outsideDocumentRoot`, `readableByPhp`, `writable`, and `reason`.
+- `request_env_upload`: issues a one-time browser upload URL valid for 10 minutes. Existing unused URLs are replaced.
 
-これらのツールはenv本文、キー名、値、ダウンロードURLを返しません。AIエージェントは `envPath` だけを受け取り、対象アプリのコードを「そのenvファイルを読む」形に修正します。env本文の投入は、ユーザーがブラウザのワンタイムアップロード画面で行います。
+These tools do not return env contents, key names, values, or download URLs. The AI agent receives only `envPath` and should update the target application code to read that env file. The env contents are provided by the user through the browser one-time upload screen.
 
-通常フローは `get_env_path` で配置パスとアップロード状態を確認し、未アップロードなら `request_env_upload` でユーザー向けURLを発行し、アップロード後にもう一度 `get_env_path` で `uploaded` と `uploadedAt` を確認します。
+Normal flow: call `get_env_path` to check placement and upload state; if not uploaded, call `request_env_upload` to issue the user-facing URL; after upload, call `get_env_path` again and check `uploaded` and `uploadedAt`.
 
-アップロード画面は任意のファイル名を受け付けますが、保存先ファイル名は常に `production.env` です。最大サイズは `256KB`、NULL byteを含むファイルは拒否します。保存は一時ファイル経由で置き換え、可能ならファイル権限を `0600` にします。バックアップは作りません。
+The upload screen accepts any filename, but the saved filename is always `production.env`. Maximum size is `256KB`; files containing NULL bytes are rejected. Saving uses a temporary file and replacement, and sets file permissions to `0600` when possible. No backup is created.
 
-ドキュメントルート配下、または `public_html` 配下にしか安全な保存先を確保できない場合、CDOはenv配置を拒否します。独自ドメインのドキュメントルートがデフォルト公開ディレクトリ配下にある共有サーバーでも、デフォルトドメインから見える可能性がある `public_html` 配下には配置しません。`.htaccess`, `.user.ini`, `php.ini`, FPM pool設定は動的生成しません。その場合は、ホスティング会社が提供する環境変数設定、Secrets設定、または管理画面の設定機能を使ってください。
+If CDO cannot secure a safe path outside the document root or outside `public_html`, env placement is rejected. This also covers shared hosts where a custom-domain document root is nested under a default public directory and could be visible from the default domain. CDO does not generate `.htaccess`, `.user.ini`, `php.ini`, or FPM pool settings. In that case, use the hosting provider's environment variable settings, Secrets settings, or control panel.
 
-## ディレクトリ構成
+## Directory Layout
 
-- `public_html/`: 本番配布を意識した単一ファイル置き場
-- `dev/qa/`: lint などの補助スクリプト
-- `dev/tests/`: 依存なしで動くスモークテスト
+- `public_html/`: single-file production-oriented entrypoint.
+- `dev/qa/`: helper scripts such as lint checks.
+- `dev/tests/`: dependency-free smoke tests.
 
-## 現在の実装範囲
+## Current Implementation Scope
 
-- 単一ファイル運用を崩さないため、本体のランタイム依存はまだ追加していません
-- MCP Inspector は開発用の外部ツールとしてのみ追加しています
-- `cdo.php` はファイル名固定に依存しない書き方で育てる前提です
-- 削除はファイルと空ディレクトリのみ対応し、再帰削除は未実装です
-- リネーム時の上書き・置換は未実装です
+- Runtime dependencies are still not added, to preserve single-file operation.
+- MCP Inspector is included only as an external development tool.
+- `cdo.php` is expected to keep working without depending on the fixed filename.
+- Delete supports files and empty directories only. Recursive delete is not implemented.
+- Rename overwrite/replace is not implemented.
