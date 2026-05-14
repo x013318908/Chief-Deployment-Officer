@@ -13,7 +13,7 @@ The current implementation includes single-agent approval-based authentication a
 - MCP connectivity check: `npm run mcp:inspect`
 - Implemented MCP methods: `ping`, `initialize`, `tools/list`, `tools/call`
 - Public tools: `server_status`, `request_auth`
-- Protected tools: `list_dir`, `read_file`, `write_file`, `create_dir`, `delete_file`, `delete_dir`, `rename_path`, `get_env_path`, `request_env_upload`, `get_runtime_info`
+- Protected tools: `list_dir`, `read_file`, `write_file`, `create_dir`, `delete_file`, `delete_dir`, `rename_path`, `stat_path`, `hash_file`, `copy_path`, `get_env_path`, `request_env_upload`, `get_runtime_info`
 
 ## Requirements
 
@@ -64,7 +64,7 @@ This authentication flow is the minimum defense for giving a bearer token to one
 - Use HTTPS. On HTTP, bearer tokens and approval URLs can be intercepted.
 - Rename `cdo.php` to a hard-to-guess PHP filename, and use the renamed filename in the MCP endpoint URL.
 - Consider additional server-side access controls such as IP restrictions, Basic authentication, or placing the file under a management-only path.
-- Back up the target directory before using `write_file`, `delete_file`, `delete_dir`, or `rename_path`.
+- Back up the target files before using `write_file`, `delete_file`, `delete_dir`, or `rename_path`. AI agents can use `create_dir`, `copy_path`, and `hash_file` to build file-level backups.
 - To reset an approval, delete the related authentication file in the deployment directory. Example: `cdo.php` uses `.cdo_auth.json`; `agent-a.php` uses `.agent-a_auth.json`.
 - Do not include `.*_auth.json`, `.*_env.json`, or `.*_debug.log` in public distributions or shared files.
 - Do not leave unused unauthenticated CDO files on a public server. Delete unused copies.
@@ -124,6 +124,8 @@ Each directive includes `globalValue`, `effectiveValue`, `overridden`, `accessRa
 - If the change is already applied, treat it as success. If not, ask the user before retrying.
 - `delete_dir` only supports empty directories. Recursive delete is not implemented.
 - `rename_path` rejects existing destinations. Rename overwrite/replace is not implemented.
+- Use `stat_path` and `hash_file` before risky changes when you need metadata or integrity checks.
+- Use `copy_path` for same-server file backups and rollbacks without sending file contents through the AI agent.
 - `request_env_upload` only issues a browser URL for a human user. Do not ask the AI agent to paste env contents, and do not upload env contents through MCP.
 
 ## list_dir
@@ -183,6 +185,33 @@ Each directive includes `globalValue`, `effectiveValue`, `overridden`, `accessRa
 - Existing destinations are always rejected; overwrite/replace is not implemented.
 - Destination parent directories are not created implicitly.
 - Both source and destination reject absolute paths, `..`, `.cdo_*` internal control files, and the current entrypoint file itself.
+
+## stat_path
+
+- The root is the directory containing `cdo.php`.
+- `path` is required. Absolute paths and `..` are rejected.
+- It returns `exists`, `type`, `size`, `mtime`, `readable`, and `writable`.
+- Missing paths return `exists: false` instead of failing, as long as the path itself is safe.
+- `.cdo_*` internal control files are rejected.
+
+## hash_file
+
+- The root is the directory containing `cdo.php`.
+- `path` is required. Absolute paths and `..` are rejected.
+- Files only. Directories and missing paths are rejected.
+- It returns `algorithm: sha256`, `hash`, `size`, and `mtime` without returning file contents.
+- `.cdo_*` internal control files are rejected.
+
+## copy_path
+
+- The root is the directory containing `cdo.php`.
+- `from` and `to` are required. `overwrite` is optional and defaults to `false`.
+- This is same-server copying only: it copies one remote file under the entrypoint directory to another relative path on the same server.
+- Files only. Directory copying and recursive copying are not implemented.
+- Destination parent directories are not created implicitly.
+- Existing destinations are rejected unless `overwrite: true` is provided.
+- File contents are not returned through MCP. The copied file uses the source file's permissions where possible.
+- Absolute paths, `..`, `.cdo_*` internal control files, and the current entrypoint file itself are rejected.
 
 ## production.env / Secrets Placement MVP
 

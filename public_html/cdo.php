@@ -520,6 +520,9 @@ function cdo_agent_guide_payload(string $endpointUrl): array
             'delete_file',
             'delete_dir',
             'rename_path',
+            'stat_path',
+            'hash_file',
+            'copy_path',
             'get_env_path',
             'request_env_upload',
             'get_runtime_info',
@@ -532,6 +535,8 @@ function cdo_agent_guide_payload(string $endpointUrl): array
             'write_file requires overwrite:true for existing files, preserves existing permissions on overwrite, and uses the server umask for new files.',
             'delete_file and delete_dir require confirm:true. delete_dir only removes empty directories; recursive delete is not implemented.',
             'rename_path requires confirm:true and never replaces an existing destination. Rename overwrite/replace is not implemented.',
+            'Use stat_path and hash_file to inspect path metadata and verify file integrity before and after changes.',
+            'Use copy_path for same-server file backups and rollbacks without sending file contents through the AI agent. copy_path only copies files and never creates parent directories.',
             'CDO does not permanently set operating system environment variables. Use get_env_path to obtain the production env file path, then update the application code to read that path.',
             'request_env_upload returns a one-time browser URL for a human user to upload an env file. The AI agent must not upload, read, download, inspect, or ask the user to paste env contents.',
             'The env file is placed outside the document root when available. If no safe outside-document-root path is available, use the hosting provider environment variables or Secrets settings instead.',
@@ -2115,6 +2120,93 @@ function cdo_get_rename_path_tool(): array
     ];
 }
 
+function cdo_get_stat_path_tool(): array
+{
+    return [
+        'name' => 'stat_path',
+        'title' => 'Stat Path',
+        'description' => 'Return existence, type, size, mtime, and readability/writability for a relative path under the MCP entrypoint directory.',
+        'inputSchema' => [
+            'type' => 'object',
+            'properties' => [
+                'path' => ['type' => 'string'],
+            ],
+            'required' => ['path'],
+        ],
+        'outputSchema' => [
+            'type' => 'object',
+            'properties' => [
+                'path' => ['type' => 'string'],
+                'name' => ['type' => 'string'],
+                'exists' => ['type' => 'boolean'],
+                'type' => ['type' => 'string'],
+                'size' => ['type' => ['integer', 'null']],
+                'mtime' => ['type' => ['integer', 'null']],
+                'readable' => ['type' => 'boolean'],
+                'writable' => ['type' => 'boolean'],
+            ],
+            'required' => ['path', 'name', 'exists', 'type', 'size', 'mtime', 'readable', 'writable'],
+        ],
+    ];
+}
+
+function cdo_get_hash_file_tool(): array
+{
+    return [
+        'name' => 'hash_file',
+        'title' => 'Hash File',
+        'description' => 'Return the SHA-256 hash, size, and mtime for a readable file under the MCP entrypoint directory without returning file contents.',
+        'inputSchema' => [
+            'type' => 'object',
+            'properties' => [
+                'path' => ['type' => 'string'],
+            ],
+            'required' => ['path'],
+        ],
+        'outputSchema' => [
+            'type' => 'object',
+            'properties' => [
+                'path' => ['type' => 'string'],
+                'name' => ['type' => 'string'],
+                'algorithm' => ['type' => 'string'],
+                'hash' => ['type' => 'string'],
+                'size' => ['type' => 'integer'],
+                'mtime' => ['type' => 'integer'],
+            ],
+            'required' => ['path', 'name', 'algorithm', 'hash', 'size', 'mtime'],
+        ],
+    ];
+}
+
+function cdo_get_copy_path_tool(): array
+{
+    return [
+        'name' => 'copy_path',
+        'title' => 'Copy Path',
+        'description' => 'Copy a file within the same remote server under the MCP entrypoint directory. This does not read file contents through the agent, does not copy directories, and does not create parent directories.',
+        'inputSchema' => [
+            'type' => 'object',
+            'properties' => [
+                'from' => ['type' => 'string'],
+                'to' => ['type' => 'string'],
+                'overwrite' => ['type' => 'boolean'],
+            ],
+            'required' => ['from', 'to'],
+        ],
+        'outputSchema' => [
+            'type' => 'object',
+            'properties' => [
+                'from' => ['type' => 'string'],
+                'to' => ['type' => 'string'],
+                'name' => ['type' => 'string'],
+                'bytesCopied' => ['type' => 'integer'],
+                'overwritten' => ['type' => 'boolean'],
+            ],
+            'required' => ['from', 'to', 'name', 'bytesCopied', 'overwritten'],
+        ],
+    ];
+}
+
 function cdo_get_env_path_tool(): array
 {
     return [
@@ -2234,6 +2326,9 @@ function cdo_get_tools(array $authContext): array
         $tools[] = cdo_get_delete_file_tool();
         $tools[] = cdo_get_delete_dir_tool();
         $tools[] = cdo_get_rename_path_tool();
+        $tools[] = cdo_get_stat_path_tool();
+        $tools[] = cdo_get_hash_file_tool();
+        $tools[] = cdo_get_copy_path_tool();
         $tools[] = cdo_get_env_path_tool();
         $tools[] = cdo_get_request_env_upload_tool();
         $tools[] = cdo_get_runtime_info_tool();
@@ -2517,6 +2612,28 @@ function cdo_validate_writable_relative_path(array $normalized, string $operatio
     }
 }
 
+function cdo_validate_readable_relative_path(array $normalized, string $operation): void
+{
+    $relativePath = (string) $normalized['relativePath'];
+
+    if ($relativePath === '.') {
+        throw new InvalidArgumentException($operation . ' path must not be the entrypoint directory.');
+    }
+
+    if (cdo_path_contains_internal_file($relativePath)) {
+        throw new InvalidArgumentException('Internal control files cannot be read.');
+    }
+}
+
+function cdo_validate_copy_source_relative_path(array $normalized): void
+{
+    cdo_validate_readable_relative_path($normalized, 'copy_path from');
+
+    if (cdo_target_is_current_entrypoint((string) $normalized['filesystemPath'])) {
+        throw new InvalidArgumentException('The current entrypoint file cannot be copied.');
+    }
+}
+
 function cdo_require_confirm(array $params, string $operation): void
 {
     if (!isset($params['confirm']) || $params['confirm'] !== true) {
@@ -2704,6 +2821,201 @@ function cdo_read_file_payload(array $params): array
         'content' => $encoding === 'utf-8' ? $content : base64_encode($content),
         'truncated' => $size > $bytesToRead,
         'bytesRead' => strlen($content),
+    ];
+}
+
+function cdo_stat_path_payload(array $params): array
+{
+    if (!isset($params['path']) || !is_string($params['path'])) {
+        throw new InvalidArgumentException('stat_path path must be a string.');
+    }
+
+    $normalized = cdo_normalize_relative_path($params['path']);
+    $relativePath = (string) $normalized['relativePath'];
+    $filesystemPath = (string) $normalized['filesystemPath'];
+
+    if (cdo_path_contains_internal_file($relativePath)) {
+        throw new InvalidArgumentException('Internal control files cannot be inspected.');
+    }
+
+    if (!file_exists($filesystemPath)) {
+        cdo_resolve_existing_ancestor_path($filesystemPath);
+
+        return [
+            'path' => $relativePath,
+            'name' => $relativePath === '.' ? '.' : basename($relativePath),
+            'exists' => false,
+            'type' => 'missing',
+            'size' => null,
+            'mtime' => null,
+            'readable' => false,
+            'writable' => false,
+        ];
+    }
+
+    $resolvedPath = cdo_resolve_existing_path($normalized);
+    $type = 'other';
+    $size = null;
+
+    if (is_file($resolvedPath)) {
+        $type = 'file';
+        $size = (int) filesize($resolvedPath);
+    } elseif (is_dir($resolvedPath)) {
+        $type = 'dir';
+        $size = 0;
+    }
+
+    return [
+        'path' => $relativePath,
+        'name' => $relativePath === '.' ? '.' : basename($relativePath),
+        'exists' => true,
+        'type' => $type,
+        'size' => $size,
+        'mtime' => (int) filemtime($resolvedPath),
+        'readable' => is_readable($resolvedPath),
+        'writable' => is_writable($resolvedPath),
+    ];
+}
+
+function cdo_hash_file_payload(array $params): array
+{
+    if (!isset($params['path']) || !is_string($params['path'])) {
+        throw new InvalidArgumentException('hash_file path must be a string.');
+    }
+
+    $normalized = cdo_normalize_relative_path($params['path']);
+    cdo_validate_readable_relative_path($normalized, 'hash_file');
+    $relativePath = (string) $normalized['relativePath'];
+    $filePath = cdo_resolve_existing_path($normalized);
+
+    if (!is_file($filePath)) {
+        throw new InvalidArgumentException('hash_file path must point to a file.');
+    }
+
+    if (!is_readable($filePath)) {
+        throw new InvalidArgumentException('hash_file path is not readable.');
+    }
+
+    $hash = hash_file('sha256', $filePath);
+
+    if (!is_string($hash)) {
+        throw new InvalidArgumentException('hash_file could not hash the file.');
+    }
+
+    return [
+        'path' => $relativePath,
+        'name' => basename($relativePath),
+        'algorithm' => 'sha256',
+        'hash' => $hash,
+        'size' => (int) filesize($filePath),
+        'mtime' => (int) filemtime($filePath),
+    ];
+}
+
+function cdo_copy_path_payload(array $params): array
+{
+    if (!isset($params['from']) || !is_string($params['from'])) {
+        throw new InvalidArgumentException('copy_path from must be a string.');
+    }
+
+    if (!isset($params['to']) || !is_string($params['to'])) {
+        throw new InvalidArgumentException('copy_path to must be a string.');
+    }
+
+    $overwrite = false;
+
+    if (isset($params['overwrite'])) {
+        if (!is_bool($params['overwrite'])) {
+            throw new InvalidArgumentException('copy_path overwrite must be a boolean.');
+        }
+
+        $overwrite = $params['overwrite'];
+    }
+
+    $fromNormalized = cdo_normalize_relative_path($params['from']);
+    $toNormalized = cdo_normalize_relative_path($params['to']);
+    cdo_validate_copy_source_relative_path($fromNormalized);
+    cdo_validate_writable_relative_path($toNormalized, 'copy_path to');
+
+    $fromRelativePath = (string) $fromNormalized['relativePath'];
+    $toRelativePath = (string) $toNormalized['relativePath'];
+    $sourcePath = cdo_resolve_existing_path($fromNormalized);
+    $destinationPath = (string) $toNormalized['filesystemPath'];
+    $parentPath = dirname($destinationPath);
+    $resolvedParentPath = cdo_resolve_existing_ancestor_path($parentPath);
+
+    if (!is_file($sourcePath)) {
+        throw new InvalidArgumentException('copy_path from must point to a file.');
+    }
+
+    if (!is_readable($sourcePath)) {
+        throw new InvalidArgumentException('copy_path from is not readable.');
+    }
+
+    if (str_replace('\\', '/', realpath($parentPath) ?: '') !== str_replace('\\', '/', $resolvedParentPath)) {
+        throw new InvalidArgumentException('copy_path destination parent does not exist.');
+    }
+
+    if (is_dir($destinationPath)) {
+        throw new InvalidArgumentException('copy_path destination points to a directory.');
+    }
+
+    $destinationExists = is_file($destinationPath);
+
+    if ($destinationExists && !$overwrite) {
+        throw new InvalidArgumentException('copy_path destination already exists. Set overwrite to true to replace it.');
+    }
+
+    if (file_exists($destinationPath) && !$destinationExists) {
+        throw new InvalidArgumentException('copy_path destination exists but is not a file.');
+    }
+
+    if ($destinationExists) {
+        $resolvedDestinationPath = realpath($destinationPath);
+
+        if (is_string($resolvedDestinationPath)
+            && strtolower(str_replace('\\', '/', $resolvedDestinationPath)) === strtolower(str_replace('\\', '/', $sourcePath))) {
+            throw new InvalidArgumentException('copy_path from and to must be different files.');
+        }
+    }
+
+    $sourceFileMode = cdo_existing_file_mode($sourcePath);
+    $temporaryPath = tempnam($resolvedParentPath, '.cdo_copy_');
+
+    if (!is_string($temporaryPath)) {
+        throw new InvalidArgumentException('Temporary file could not be created.');
+    }
+
+    if (!@copy($sourcePath, $temporaryPath)) {
+        @unlink($temporaryPath);
+        throw new InvalidArgumentException('File could not be copied.');
+    }
+
+    try {
+        cdo_apply_file_mode($temporaryPath, $sourceFileMode);
+    } catch (InvalidArgumentException $exception) {
+        @unlink($temporaryPath);
+        throw $exception;
+    }
+
+    $renamed = @rename($temporaryPath, $destinationPath);
+
+    if (!$renamed && $destinationExists && $overwrite) {
+        @unlink($destinationPath);
+        $renamed = @rename($temporaryPath, $destinationPath);
+    }
+
+    if (!$renamed) {
+        @unlink($temporaryPath);
+        throw new InvalidArgumentException('File could not be copied.');
+    }
+
+    return [
+        'from' => $fromRelativePath,
+        'to' => $toRelativePath,
+        'name' => basename($toRelativePath),
+        'bytesCopied' => (int) filesize($destinationPath),
+        'overwritten' => $destinationExists,
     ];
 }
 
@@ -3605,6 +3917,110 @@ function cdo_handle_request(array $message): void
                 $payload = cdo_runtime_info_payload();
                 cdo_jsonrpc_result($id, cdo_tool_result(
                     'Returned safe PHP runtime diagnostics. This is not raw phpinfo() output.',
+                    $payload
+                ), 200, [
+                    'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                ]);
+                return;
+            }
+
+            if ($toolName === 'stat_path') {
+                if (!$authContext['isAuthorized']) {
+                    $message = 'Authentication required. Use request_auth and then send Authorization: Bearer <token> or X-CDO-Bearer-Token: <token>.';
+
+                    if (($authContext['state']['state'] ?? null) === 'locked') {
+                        $message = (string) ($authContext['state']['message'] ?? 'Authentication is locked.');
+                    }
+
+                    cdo_jsonrpc_error($id, -32001, $message, 200, [
+                        'reason' => $authContext['reason'],
+                    ], [
+                        'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                    ]);
+                    return;
+                }
+
+                try {
+                    $payload = cdo_stat_path_payload($arguments);
+                } catch (InvalidArgumentException $exception) {
+                    cdo_jsonrpc_error($id, -32602, $exception->getMessage(), 200, null, [
+                        'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                    ]);
+                    return;
+                }
+
+                cdo_jsonrpc_result($id, cdo_tool_result(
+                    $payload['exists']
+                        ? 'Path exists: ' . $payload['path'] . ' (' . $payload['type'] . ').'
+                        : 'Path does not exist: ' . $payload['path'] . '.',
+                    $payload
+                ), 200, [
+                    'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                ]);
+                return;
+            }
+
+            if ($toolName === 'hash_file') {
+                if (!$authContext['isAuthorized']) {
+                    $message = 'Authentication required. Use request_auth and then send Authorization: Bearer <token> or X-CDO-Bearer-Token: <token>.';
+
+                    if (($authContext['state']['state'] ?? null) === 'locked') {
+                        $message = (string) ($authContext['state']['message'] ?? 'Authentication is locked.');
+                    }
+
+                    cdo_jsonrpc_error($id, -32001, $message, 200, [
+                        'reason' => $authContext['reason'],
+                    ], [
+                        'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                    ]);
+                    return;
+                }
+
+                try {
+                    $payload = cdo_hash_file_payload($arguments);
+                } catch (InvalidArgumentException $exception) {
+                    cdo_jsonrpc_error($id, -32602, $exception->getMessage(), 200, null, [
+                        'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                    ]);
+                    return;
+                }
+
+                cdo_jsonrpc_result($id, cdo_tool_result(
+                    'SHA-256 for ' . $payload['path'] . ': ' . $payload['hash'],
+                    $payload
+                ), 200, [
+                    'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                ]);
+                return;
+            }
+
+            if ($toolName === 'copy_path') {
+                if (!$authContext['isAuthorized']) {
+                    $message = 'Authentication required. Use request_auth and then send Authorization: Bearer <token> or X-CDO-Bearer-Token: <token>.';
+
+                    if (($authContext['state']['state'] ?? null) === 'locked') {
+                        $message = (string) ($authContext['state']['message'] ?? 'Authentication is locked.');
+                    }
+
+                    cdo_jsonrpc_error($id, -32001, $message, 200, [
+                        'reason' => $authContext['reason'],
+                    ], [
+                        'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                    ]);
+                    return;
+                }
+
+                try {
+                    $payload = cdo_copy_path_payload($arguments);
+                } catch (InvalidArgumentException $exception) {
+                    cdo_jsonrpc_error($id, -32602, $exception->getMessage(), 200, null, [
+                        'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,
+                    ]);
+                    return;
+                }
+
+                cdo_jsonrpc_result($id, cdo_tool_result(
+                    'Copied ' . $payload['from'] . ' to ' . $payload['to'] . '.',
                     $payload
                 ), 200, [
                     'MCP-Protocol-Version' => CDO_PROTOCOL_VERSION,

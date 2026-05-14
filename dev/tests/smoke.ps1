@@ -22,6 +22,22 @@ function ConvertFrom-Utf8Base64 {
     return [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($Value))
 }
 
+function Get-Sha256FileHash {
+    param(
+        [string] $Path
+    )
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::OpenRead($Path)
+
+    try {
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($stream)) -replace '-', '').ToLowerInvariant()
+    } finally {
+        $stream.Dispose()
+        $sha256.Dispose()
+    }
+}
+
 function Test-PosixFileModes {
     return [System.IO.Path]::DirectorySeparatorChar -eq '/'
 }
@@ -707,6 +723,9 @@ try {
     Assert-True (-not ($toolNames -contains 'get_env_path')) 'tools/list should not expose get_env_path before auth.'
     Assert-True (-not ($toolNames -contains 'request_env_upload')) 'tools/list should not expose request_env_upload before auth.'
     Assert-True (-not ($toolNames -contains 'get_runtime_info')) 'tools/list should not expose get_runtime_info before auth.'
+    Assert-True (-not ($toolNames -contains 'stat_path')) 'tools/list should not expose stat_path before auth.'
+    Assert-True (-not ($toolNames -contains 'hash_file')) 'tools/list should not expose hash_file before auth.'
+    Assert-True (-not ($toolNames -contains 'copy_path')) 'tools/list should not expose copy_path before auth.'
 
     $unauthorizedListDir = Invoke-JsonRpcTool -Url $mcpUrl -Id 4 -ToolName 'list_dir'
     Assert-True ($unauthorizedListDir.StatusCode -eq 200) 'Unauthorized list_dir should still return JSON-RPC.'
@@ -775,6 +794,28 @@ try {
     Assert-True ($unauthorizedRuntimeInfo.StatusCode -eq 200) 'Unauthorized get_runtime_info should still return JSON-RPC.'
     $unauthorizedRuntimeInfoJson = $unauthorizedRuntimeInfo.Content | ConvertFrom-Json
     Assert-True ($unauthorizedRuntimeInfoJson.error.code -eq -32001) 'Unauthorized get_runtime_info should return an auth error.'
+
+    $unauthorizedStatPath = Invoke-JsonRpcTool -Url $mcpUrl -Id 127 -ToolName 'stat_path' -Arguments @{
+        path = 'smoke-fixture/alpha.txt'
+    }
+    Assert-True ($unauthorizedStatPath.StatusCode -eq 200) 'Unauthorized stat_path should still return JSON-RPC.'
+    $unauthorizedStatPathJson = $unauthorizedStatPath.Content | ConvertFrom-Json
+    Assert-True ($unauthorizedStatPathJson.error.code -eq -32001) 'Unauthorized stat_path should return an auth error.'
+
+    $unauthorizedHashFile = Invoke-JsonRpcTool -Url $mcpUrl -Id 128 -ToolName 'hash_file' -Arguments @{
+        path = 'smoke-fixture/alpha.txt'
+    }
+    Assert-True ($unauthorizedHashFile.StatusCode -eq 200) 'Unauthorized hash_file should still return JSON-RPC.'
+    $unauthorizedHashFileJson = $unauthorizedHashFile.Content | ConvertFrom-Json
+    Assert-True ($unauthorizedHashFileJson.error.code -eq -32001) 'Unauthorized hash_file should return an auth error.'
+
+    $unauthorizedCopyPath = Invoke-JsonRpcTool -Url $mcpUrl -Id 129 -ToolName 'copy_path' -Arguments @{
+        from = 'smoke-fixture/alpha.txt'
+        to = 'smoke-fixture/alpha-copy.txt'
+    }
+    Assert-True ($unauthorizedCopyPath.StatusCode -eq 200) 'Unauthorized copy_path should still return JSON-RPC.'
+    $unauthorizedCopyPathJson = $unauthorizedCopyPath.Content | ConvertFrom-Json
+    Assert-True ($unauthorizedCopyPathJson.error.code -eq -32001) 'Unauthorized copy_path should return an auth error.'
 
     $serverStatusBeforeAuth = Invoke-JsonRpcTool -Url $mcpUrl -Id 40 -ToolName 'server_status'
     $serverStatusBeforeAuthJson = $serverStatusBeforeAuth.Content | ConvertFrom-Json
@@ -893,6 +934,9 @@ try {
     Assert-True ($toolNamesAuthorized -contains 'get_env_path') 'Authorized tools/list should expose get_env_path.'
     Assert-True ($toolNamesAuthorized -contains 'request_env_upload') 'Authorized tools/list should expose request_env_upload.'
     Assert-True ($toolNamesAuthorized -contains 'get_runtime_info') 'Authorized tools/list should expose get_runtime_info.'
+    Assert-True ($toolNamesAuthorized -contains 'stat_path') 'Authorized tools/list should expose stat_path.'
+    Assert-True ($toolNamesAuthorized -contains 'hash_file') 'Authorized tools/list should expose hash_file.'
+    Assert-True ($toolNamesAuthorized -contains 'copy_path') 'Authorized tools/list should expose copy_path.'
     $envToolNamesAuthorized = @($toolNamesAuthorized | Where-Object { $_ -like '*env*' })
     Assert-True ($envToolNamesAuthorized.Count -eq 2) 'Authorized tools/list should expose exactly two env tools.'
 
@@ -1093,6 +1137,118 @@ try {
     }
     $readDirectoryJson = $readDirectory.Content | ConvertFrom-Json
     Assert-True ($readDirectoryJson.error.code -eq -32602) 'read_file should reject directories.'
+
+    $statFile = Invoke-JsonRpcTool -Url $mcpUrl -Id 130 -ToolName 'stat_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-fixture/alpha.txt'
+    }
+    $statFileJson = $statFile.Content | ConvertFrom-Json
+    $statFileData = $statFileJson.result.structuredContent
+    Assert-True ($statFileData.exists) 'stat_path should report existing files.'
+    Assert-True ($statFileData.type -eq 'file') 'stat_path should report file type.'
+    Assert-True ($statFileData.size -eq (Get-Item $fixtureFile).Length) 'stat_path should report file size.'
+    Assert-True ($statFileData.mtime -gt 0) 'stat_path should report file mtime.'
+    Assert-True ($statFileData.readable) 'stat_path should report readable files.'
+
+    $statDirectory = Invoke-JsonRpcTool -Url $mcpUrl -Id 131 -ToolName 'stat_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-fixture/nested'
+    }
+    $statDirectoryJson = $statDirectory.Content | ConvertFrom-Json
+    Assert-True ($statDirectoryJson.result.structuredContent.exists) 'stat_path should report existing directories.'
+    Assert-True ($statDirectoryJson.result.structuredContent.type -eq 'dir') 'stat_path should report directory type.'
+
+    $statMissing = Invoke-JsonRpcTool -Url $mcpUrl -Id 132 -ToolName 'stat_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-fixture/missing.txt'
+    }
+    $statMissingJson = $statMissing.Content | ConvertFrom-Json
+    Assert-True (-not $statMissingJson.result.structuredContent.exists) 'stat_path should report missing paths without failing.'
+    Assert-True ($statMissingJson.result.structuredContent.type -eq 'missing') 'stat_path should report missing type.'
+
+    $statInternal = Invoke-JsonRpcTool -Url $mcpUrl -Id 133 -ToolName 'stat_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = '.cdo_secret.txt'
+    }
+    $statInternalJson = $statInternal.Content | ConvertFrom-Json
+    Assert-True ($statInternalJson.error.code -eq -32602) 'stat_path should reject internal control files.'
+
+    $hashFile = Invoke-JsonRpcTool -Url $mcpUrl -Id 134 -ToolName 'hash_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-fixture/alpha.txt'
+    }
+    $hashFileJson = $hashFile.Content | ConvertFrom-Json
+    $hashFileData = $hashFileJson.result.structuredContent
+    $expectedAlphaHash = Get-Sha256FileHash -Path $fixtureFile
+    $alphaFileContent = Get-Content -Raw $fixtureFile
+    Assert-True ($hashFileData.algorithm -eq 'sha256') 'hash_file should report sha256.'
+    Assert-True ($hashFileData.hash -eq $expectedAlphaHash) 'hash_file should report the expected SHA-256 hash.'
+    Assert-True (-not $hashFile.Content.Contains($alphaFileContent)) 'hash_file should not return file contents.'
+
+    $hashDirectory = Invoke-JsonRpcTool -Url $mcpUrl -Id 135 -ToolName 'hash_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-fixture/nested'
+    }
+    $hashDirectoryJson = $hashDirectory.Content | ConvertFrom-Json
+    Assert-True ($hashDirectoryJson.error.code -eq -32602) 'hash_file should reject directories.'
+
+    $copyPath = Invoke-JsonRpcTool -Url $mcpUrl -Id 136 -ToolName 'copy_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        from = 'smoke-fixture/alpha.txt'
+        to = 'smoke-fixture/alpha-copy.txt'
+    }
+    $copyPathJson = $copyPath.Content | ConvertFrom-Json
+    $copyPathData = $copyPathJson.result.structuredContent
+    $copyDestination = Join-Path $fixtureDir 'alpha-copy.txt'
+    Assert-True ($copyPathData.from -eq 'smoke-fixture/alpha.txt') 'copy_path should report the source path.'
+    Assert-True ($copyPathData.to -eq 'smoke-fixture/alpha-copy.txt') 'copy_path should report the destination path.'
+    Assert-True ($copyPathData.bytesCopied -eq (Get-Item $fixtureFile).Length) 'copy_path should report copied bytes.'
+    Assert-True (-not $copyPathData.overwritten) 'copy_path should report new destinations as not overwritten.'
+    Assert-True ((Get-Content -Raw $copyDestination) -eq $alphaFileContent) 'copy_path should copy file contents server-side.'
+    Assert-True (-not $copyPath.Content.Contains($alphaFileContent)) 'copy_path should not return file contents.'
+
+    $hashCopiedFile = Invoke-JsonRpcTool -Url $mcpUrl -Id 137 -ToolName 'hash_file' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        path = 'smoke-fixture/alpha-copy.txt'
+    }
+    $hashCopiedFileJson = $hashCopiedFile.Content | ConvertFrom-Json
+    Assert-True ($hashCopiedFileJson.result.structuredContent.hash -eq $expectedAlphaHash) 'hash_file should verify copied file integrity.'
+
+    $copyExistingDestination = Invoke-JsonRpcTool -Url $mcpUrl -Id 138 -ToolName 'copy_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        from = 'smoke-fixture/alpha.txt'
+        to = 'smoke-fixture/alpha-copy.txt'
+    }
+    $copyExistingDestinationJson = $copyExistingDestination.Content | ConvertFrom-Json
+    Assert-True ($copyExistingDestinationJson.error.code -eq -32602) 'copy_path should reject existing destinations without overwrite.'
+
+    $copyOverwrite = Invoke-JsonRpcTool -Url $mcpUrl -Id 139 -ToolName 'copy_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        from = 'smoke-fixture/.beta.txt'
+        to = 'smoke-fixture/alpha-copy.txt'
+        overwrite = $true
+    }
+    $copyOverwriteJson = $copyOverwrite.Content | ConvertFrom-Json
+    Assert-True ($copyOverwriteJson.result.structuredContent.overwritten) 'copy_path should support explicit overwrite.'
+    Assert-True ((Get-Content -Raw $copyDestination) -eq (Get-Content -Raw $fixtureDotFile)) 'copy_path overwrite should replace destination contents.'
+
+    $copyDirectorySource = Invoke-JsonRpcTool -Url $mcpUrl -Id 140 -ToolName 'copy_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        from = 'smoke-fixture/nested'
+        to = 'smoke-fixture/nested-copy'
+    }
+    $copyDirectorySourceJson = $copyDirectorySource.Content | ConvertFrom-Json
+    Assert-True ($copyDirectorySourceJson.error.code -eq -32602) 'copy_path should reject directory sources.'
+
+    $copyInternalSource = Invoke-JsonRpcTool -Url $mcpUrl -Id 141 -ToolName 'copy_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        from = '.cdo_secret.txt'
+        to = 'smoke-fixture/internal-copy.txt'
+    }
+    $copyInternalSourceJson = $copyInternalSource.Content | ConvertFrom-Json
+    Assert-True ($copyInternalSourceJson.error.code -eq -32602) 'copy_path should reject internal control files as sources.'
+
+    $copyEntrypointSource = Invoke-JsonRpcTool -Url $mcpUrl -Id 142 -ToolName 'copy_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        from = 'cdo.php'
+        to = 'smoke-fixture/cdo-copy.php'
+    }
+    $copyEntrypointSourceJson = $copyEntrypointSource.Content | ConvertFrom-Json
+    Assert-True ($copyEntrypointSourceJson.error.code -eq -32602) 'copy_path should reject the current entrypoint file as the source.'
+
+    $copyMissingParent = Invoke-JsonRpcTool -Url $mcpUrl -Id 143 -ToolName 'copy_path' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
+        from = 'smoke-fixture/alpha.txt'
+        to = 'smoke-copy-missing/alpha.txt'
+    }
+    $copyMissingParentJson = $copyMissingParent.Content | ConvertFrom-Json
+    Assert-True ($copyMissingParentJson.error.code -eq -32602) 'copy_path should reject missing destination parents.'
 
     $createWriteDir = Invoke-JsonRpcTool -Url $mcpUrl -Id 51 -ToolName 'create_dir' -BearerToken $bearerToken -BearerHeaderName 'X-CDO-Bearer-Token' -Arguments @{
         path = 'smoke-write'
