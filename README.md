@@ -2,6 +2,8 @@
 
 [日本語版 README](README.ja.md)
 
+[Project site](https://x013318908.github.io/Chief-Deployment-Officer/)
+
 Chief-Deployment-Officer is a single-file PHP MCP endpoint for letting an approved AI agent operate files and assist deployment on a remote server.
 
 Place one `cdo.php` file on a server, open it in a browser for guidance, approve one AI agent, and that agent can use MCP tools for file listing, reading, writing, backup primitives, rename/delete operations, runtime diagnostics, and `production.env` placement support.

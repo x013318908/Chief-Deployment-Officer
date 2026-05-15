@@ -2,6 +2,8 @@
 
 [English README](README.md)
 
+[プロジェクトサイト](https://x013318908.github.io/Chief-Deployment-Officer/)
+
 Chief-Deployment-Officer は、承認済みAIエージェントにリモートサーバー上のファイル操作とデプロイ補助を任せるための、単一PHPファイル構成の MCP endpoint です。
 
 サーバーに `cdo.php` を1ファイルだけ配置し、ブラウザ画面で内容を確認してAIエージェントを承認すると、そのAIエージェントはファイル一覧、読み取り、書き込み、バックアップ用プリミティブ、リネーム/削除、runtime診断、`production.env` 配置補助をMCPツールとして使えます。

@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chief-Deployment-Officer</title>
+  <meta name="description" content="Single-file PHP MCP endpoint for approved AI agents to operate files and assist deployment on a remote server.">
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0f172a;
+      --card: #111827;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --line: #374151;
+      --accent: #60a5fa;
+      --accent-strong: #93c5fd;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top left, #1d4ed8 0, transparent 32rem), var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.6;
+    }
+    main {
+      width: min(960px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 72px 0;
+    }
+    .hero {
+      padding: 40px;
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: color-mix(in srgb, var(--card), transparent 8%);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+    }
+    h1 {
+      margin: 0 0 16px;
+      font-size: clamp(2.4rem, 7vw, 5rem);
+      line-height: 1;
+      letter-spacing: -0.06em;
+    }
+    h2 {
+      margin-top: 40px;
+      font-size: 1.4rem;
+    }
+    p {
+      max-width: 760px;
+    }
+    .lead {
+      color: var(--muted);
+      font-size: 1.18rem;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 28px;
+    }
+    a {
+      color: var(--accent-strong);
+    }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 0 16px;
+      border: 1px solid var(--accent);
+      border-radius: 12px;
+      color: #08111f;
+      background: var(--accent-strong);
+      font-weight: 700;
+      text-decoration: none;
+    }
+    .button.secondary {
+      color: var(--text);
+      background: transparent;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+      margin-top: 24px;
+    }
+    .card {
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(17, 24, 39, 0.72);
+    }
+    .card h3 {
+      margin: 0 0 8px;
+    }
+    .card p {
+      margin: 0;
+      color: var(--muted);
+    }
+    code {
+      padding: 2px 6px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.06);
+    }
+    footer {
+      margin-top: 40px;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <h1>Chief-Deployment-Officer</h1>
+      <p class="lead">A single-file PHP MCP endpoint for letting an approved AI agent operate files and assist deployment on a remote server.</p>
+      <div class="actions">
+        <a class="button" href="https://github.com/x013318908/Chief-Deployment-Officer/releases/latest/download/cdo.php">Download cdo.php</a>
+        <a class="button secondary" href="https://github.com/x013318908/Chief-Deployment-Officer">View on GitHub</a>
+      </div>
+    </section>
+
+    <section>
+      <h2>What it does</h2>
+      <div class="grid">
+        <article class="card">
+          <h3>Remote file operations</h3>
+          <p>Approved agents can list, read, write, create, rename, delete, copy, stat, and hash files under the endpoint directory.</p>
+        </article>
+        <article class="card">
+          <h3>Human approval</h3>
+          <p>The browser approval flow issues a bearer token only after the user explicitly approves the AI agent.</p>
+        </article>
+        <article class="card">
+          <h3>Deployment support</h3>
+          <p>Runtime diagnostics and <code>production.env</code> placement helpers support shared-host deployment without exposing secret values through MCP.</p>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <h2>Quick start</h2>
+      <p>Download <code>cdo.php</code>, rename it to a hard-to-guess PHP filename, upload that single file to a HTTPS server, then open the deployed URL in a browser. The page explains the MCP endpoint, authorization state, and AI-agent connection flow.</p>
+    </section>
+
+    <section>
+      <h2>License</h2>
+      <p>Chief-Deployment-Officer is released under <a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0 1.0 Universal</a>.</p>
+    </section>
+
+    <footer>
+      <p>This page is published from the repository's <code>docs/</code> directory by GitHub Pages.</p>
+    </footer>
+  </main>
+</body>
+</html>
