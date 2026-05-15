@@ -1,5 +1,7 @@
 <?php
 
+// SPDX-License-Identifier: CC0-1.0
+
 declare(strict_types=1);
 
 const CDO_APP_NAME = 'Chief-Deployment-Officer';

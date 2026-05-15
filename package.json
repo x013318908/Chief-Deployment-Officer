@@ -1,6 +1,7 @@
 {
   "name": "chief-deployment-officer-devtools",
   "private": true,
+  "license": "CC0-1.0",
   "type": "module",
   "scripts": {
     "mcp:inspect": "mcp-inspector"

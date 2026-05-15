@@ -33,6 +33,10 @@ The current implementation includes per-entrypoint approval-based authentication
 - It does not implement recursive delete or rename overwrite/replace.
 - It does not permanently set operating system environment variables.
 
+## License
+
+This project is released under CC0 1.0 Universal. See `LICENSE`.
+
 ## Requirements
 
 - PHP 7.4+ is the production target.
