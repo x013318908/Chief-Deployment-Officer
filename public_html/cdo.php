@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 const CDO_APP_NAME = 'Chief-Deployment-Officer';
-const CDO_APP_VERSION = '0.2.0-dev';
+const CDO_APP_VERSION = '0.2.0';
 const CDO_JSONRPC_VERSION = '2.0';
 const CDO_PROTOCOL_VERSION = '2025-11-25';
 const CDO_SUPPORTED_PROTOCOL_VERSIONS = [
