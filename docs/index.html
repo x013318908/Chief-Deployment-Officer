@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Chief-Deployment-Officer</title>
-  <meta name="description" content="Single-file PHP MCP endpoint for approved AI agents to operate files and assist deployment on a remote server.">
+  <meta name="description" content="Single-file PHP MCP endpoint for approved AI agents to operate files, back up changes, and help ship vibe-coded apps to a remote server.">
   <style>
     :root {
       color-scheme: light dark;
@@ -54,6 +54,11 @@
     .lead {
       color: var(--muted);
       font-size: 1.18rem;
+    }
+    .tagline {
+      margin: 18px 0 0;
+      color: var(--accent-strong);
+      font-weight: 700;
     }
     .actions {
       display: flex;
@@ -117,11 +122,17 @@
   <main>
     <section class="hero">
       <h1>Chief-Deployment-Officer</h1>
-      <p class="lead">A single-file PHP MCP endpoint for letting an approved AI agent operate files and assist deployment on a remote server.</p>
+      <p class="lead">A single-file PHP MCP endpoint that lets your approved AI agent operate files, back up changes, and help ship vibe-coded apps to a remote server.</p>
+      <p class="tagline">No server-side install. Upload one PHP file, approve one AI agent, and operate through MCP. CC0.</p>
       <div class="actions">
         <a class="button" href="https://github.com/x013318908/Chief-Deployment-Officer/releases/latest/download/cdo.php">Download cdo.php</a>
         <a class="button secondary" href="https://github.com/x013318908/Chief-Deployment-Officer">View on GitHub</a>
       </div>
+    </section>
+
+    <section>
+      <h2>Why single-file?</h2>
+      <p>Many shared hosting environments do not provide SSH, Docker, or modern deployment pipelines. Chief-Deployment-Officer is designed to be uploaded like a normal PHP file, then used by an approved AI agent through MCP.</p>
     </section>
 
     <section>
