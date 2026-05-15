@@ -2,11 +2,13 @@
 
 [日本語版 README](README.ja.md)
 
-Chief-Deployment-Officer is a development foundation for a PHP single-file deployment tool.
+Chief-Deployment-Officer is a single-file PHP MCP endpoint for letting an approved AI agent operate files and assist deployment on a remote server.
+
+Place one `cdo.php` file on a server, open it in a browser for guidance, approve one AI agent, and that agent can use MCP tools for file listing, reading, writing, backup primitives, rename/delete operations, runtime diagnostics, and `production.env` placement support.
 
 This README is for people who develop or distribute `cdo.php`, and for AI agents that need to understand the implementation. User-facing approval guidance is kept in the deployed `cdo.php` browser page and approval screens.
 
-The current implementation includes single-agent approval-based authentication and a minimal set of file operation tools.
+The current implementation includes per-entrypoint approval-based authentication, protected file operation tools, env placement helpers, and runtime diagnostics.
 
 - Production entrypoint: `public_html/cdo.php`
 - Development helpers: `composer serve`, `composer lint`, `composer test`, `composer qa`
@@ -14,6 +16,22 @@ The current implementation includes single-agent approval-based authentication a
 - Implemented MCP methods: `ping`, `initialize`, `tools/list`, `tools/call`
 - Public tools: `server_status`, `request_auth`
 - Protected tools: `list_dir`, `read_file`, `write_file`, `create_dir`, `delete_file`, `delete_dir`, `rename_path`, `stat_path`, `hash_file`, `copy_path`, `get_env_path`, `request_env_upload`, `get_runtime_info`
+
+## What It Is
+
+- A Streamable HTTP MCP endpoint for AI agents.
+- A single PHP file intended to be easy to place on shared hosting.
+- A per-entrypoint approval model: one deployed PHP file authorizes one AI agent.
+- A controlled remote file operation surface for deployment assistance.
+- A helper for safe metadata checks, file-level backups, runtime diagnostics, and `production.env` placement.
+
+## What It Is Not
+
+- It is not an OAuth/OIDC server.
+- It is not a general FTP, SFTP, or shell replacement.
+- It is not a multi-agent management server inside one endpoint file.
+- It does not implement recursive delete or rename overwrite/replace.
+- It does not permanently set operating system environment variables.
 
 ## Requirements
 
@@ -52,6 +70,21 @@ When giving a remote `cdo.php` URL to an AI agent, tell it to use that exact URL
 `/sse` is routed to `cdo.php` by the development router, but SSE transport itself is not implemented. In MCP Inspector, choose Streamable HTTP and use either `/mcp` or `/cdo.php`.
 
 Authentication is not OAuth/OIDC. Discovery endpoints such as `/.well-known/oauth-protected-resource` are not implemented. Do not use MCP Inspector's OAuth flow; manually configure the token returned by `request_auth` as a header.
+
+## Initial Release Procedure
+
+Use `public_html/cdo.php` as the release artifact. The rest of the repository is for development, documentation, and tests.
+
+1. Run `composer qa` and fix any CDO-side failures before publishing.
+2. Confirm that the distribution target is the single entrypoint file `public_html/cdo.php`.
+3. Rename `cdo.php` to a hard-to-guess `.php` filename for the production server.
+4. Upload only that renamed PHP file to the intended server directory.
+5. Do not ship development files such as `dev/`, `vendor/`, `node_modules/`, `.idea/`, Composer files, npm files, or local test artifacts unless you intentionally want a source checkout.
+6. Do not ship generated runtime state files such as `.*_auth.json`, `.*_env.json`, or `.*_debug.log`.
+7. Open the deployed URL over HTTPS and confirm that the browser guidance page shows the expected endpoint and an unauthenticated state.
+8. Give the deployed URL to the AI agent, let it call `request_auth`, approve the generated URL in the browser, then confirm protected tools with `server_status`.
+
+The final distribution check means confirming whether CDO is still intended to be distributed as one PHP file: `public_html/cdo.php`. If that remains true, release packages and manual uploads should not require any other repository files.
 
 ## File Renaming And Authentication Notes
 
@@ -130,88 +163,88 @@ Each directive includes `globalValue`, `effectiveValue`, `overridden`, `accessRa
 
 ## list_dir
 
-- The root is the directory containing `cdo.php`.
+- The root is the directory containing the current entrypoint file.
 - The default `path` is `.`.
 - It returns direct children only; it is not recursive.
-- `.cdo_*` is treated as internal control data and excluded from listings.
-- Regular dotfiles are not excluded.
+- Internal control files such as `.cdo_*`, `.*_auth.json`, `.*_env.json`, and `.*_debug.log` are excluded from listings.
+- Other regular dotfiles are not excluded.
 
 ## read_file
 
-- The root is the directory containing `cdo.php`.
+- The root is the directory containing the current entrypoint file.
 - `path` is required. Absolute paths and `..` are rejected.
-- Internal control files beginning with `.cdo_*` are not readable.
+- Internal control files such as `.cdo_*`, `.*_auth.json`, `.*_env.json`, and `.*_debug.log` are not readable.
 - `maxBytes` controls the read limit. The maximum is `1048576` bytes.
 - UTF-8 text is returned directly; binary content is returned as base64.
 
 ## write_file
 
-- The root is the directory containing `cdo.php`.
+- The root is the directory containing the current entrypoint file.
 - `path`, `content`, and `encoding` are required. `encoding` must be `utf-8` or `base64`.
 - Existing files are rejected unless `overwrite: true` is provided.
 - When `overwrite: true` overwrites an existing file, the existing file permissions are preserved.
 - New file permissions are not fixed; they follow normal creation semantics, equivalent to `0666 & ~umask()`.
 - Parent directories are not created implicitly. Call `create_dir` first when needed.
-- Absolute paths, `..`, `.cdo_*` internal control files, and the current entrypoint file itself are rejected.
+- Absolute paths, `..`, internal control files, and the current entrypoint file itself are rejected.
 
 ## create_dir
 
-- The root is the directory containing `cdo.php`.
+- The root is the directory containing the current entrypoint file.
 - `path` is required. Absolute paths and `..` are rejected.
 - Parent directories are created only when `recursive: true` is provided.
 - If the path already exists as a directory, the operation succeeds. If it exists as a file, the operation is rejected.
-- `.cdo_*` internal control names and the current entrypoint file itself are rejected.
+- Internal control names and the current entrypoint file itself are rejected.
 
 ## delete_file
 
-- The root is the directory containing `cdo.php`.
+- The root is the directory containing the current entrypoint file.
 - `path` and `confirm: true` are required.
-- Absolute paths, `..`, `.cdo_*` internal control files, and the current entrypoint file itself are rejected.
+- Absolute paths, `..`, internal control files, and the current entrypoint file itself are rejected.
 - Directories cannot be deleted with this tool. Use `delete_dir` for directories.
 
 ## delete_dir
 
-- The root is the directory containing `cdo.php`.
+- The root is the directory containing the current entrypoint file.
 - `path` and `confirm: true` are required.
 - Only empty directories can be deleted. Non-empty directories and files are rejected.
 - Recursive delete is not implemented.
-- Absolute paths, `..`, `.cdo_*` internal control files, and the current entrypoint file itself are rejected.
+- Absolute paths, `..`, internal control files, and the current entrypoint file itself are rejected.
 
 ## rename_path
 
-- The root is the directory containing `cdo.php`.
+- The root is the directory containing the current entrypoint file.
 - `from`, `to`, and `confirm: true` are required.
 - Files and directories can be renamed or moved.
 - Existing destinations are always rejected; overwrite/replace is not implemented.
 - Destination parent directories are not created implicitly.
-- Both source and destination reject absolute paths, `..`, `.cdo_*` internal control files, and the current entrypoint file itself.
+- Both source and destination reject absolute paths, `..`, internal control files, and the current entrypoint file itself.
 
 ## stat_path
 
-- The root is the directory containing `cdo.php`.
+- The root is the directory containing the current entrypoint file.
 - `path` is required. Absolute paths and `..` are rejected.
 - It returns `exists`, `type`, `size`, `mtime`, `readable`, and `writable`.
 - Missing paths return `exists: false` instead of failing, as long as the path itself is safe.
-- `.cdo_*` internal control files are rejected.
+- Internal control files are rejected.
 
 ## hash_file
 
-- The root is the directory containing `cdo.php`.
+- The root is the directory containing the current entrypoint file.
 - `path` is required. Absolute paths and `..` are rejected.
 - Files only. Directories and missing paths are rejected.
 - It returns `algorithm: sha256`, `hash`, `size`, and `mtime` without returning file contents.
-- `.cdo_*` internal control files are rejected.
+- Internal control files are rejected.
 
 ## copy_path
 
-- The root is the directory containing `cdo.php`.
+- The root is the directory containing the current entrypoint file.
 - `from` and `to` are required. `overwrite` is optional and defaults to `false`.
 - This is same-server copying only: it copies one remote file under the entrypoint directory to another relative path on the same server.
 - Files only. Directory copying and recursive copying are not implemented.
 - Destination parent directories are not created implicitly.
 - Existing destinations are rejected unless `overwrite: true` is provided.
 - File contents are not returned through MCP. The copied file uses the source file's permissions where possible.
-- Absolute paths, `..`, `.cdo_*` internal control files, and the current entrypoint file itself are rejected.
+- Absolute paths, `..`, internal control files, and the current entrypoint file itself are rejected.
 
 ## production.env / Secrets Placement MVP
 
@@ -238,7 +271,7 @@ If CDO cannot secure a safe path outside the document root or outside `public_ht
 
 ## Current Implementation Scope
 
-- Runtime dependencies are still not added, to preserve single-file operation.
+- The runtime entrypoint remains a single PHP file with no external runtime dependencies.
 - MCP Inspector is included only as an external development tool.
 - `cdo.php` is expected to keep working without depending on the fixed filename.
 - Delete supports files and empty directories only. Recursive delete is not implemented.

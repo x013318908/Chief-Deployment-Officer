@@ -511,7 +511,7 @@ function cdo_agent_guide_payload(string $endpointUrl): array
         ],
         'contextHint' => 'Use contextHint as a short clue that helps the user find the approving conversation later, such as "Codex desktop / project or deploy thread / YYYY-MM-DD". Do not include secrets or tokens.',
         'inspector' => 'In MCP Inspector, choose Streamable HTTP and put X-CDO-Bearer-Token: <bearerToken> in the Authentication custom headers. Do not use the OAuth flow.',
-        'multiAgent' => 'One file equals one agent authorization. For multiple agents, copy this PHP file into separate subdirectories such as agent-a/cdo.php and agent-b/cdo.php. Each copy has its own URL, auth state, and approval flow.',
+        'multiAgent' => 'One file equals one agent authorization. For multiple agents, copy this PHP file to separate filenames in the same directory, such as agent-a.php and agent-b.php, or into separate subdirectories. Each copy has its own URL, auth state, env state, debug log, and approval flow.',
         'protectedTools' => [
             'list_dir',
             'read_file',
@@ -529,7 +529,7 @@ function cdo_agent_guide_payload(string $endpointUrl): array
         ],
         'operationRules' => [
             'The root is the directory that contains this endpoint file.',
-            'Use relative paths only. Absolute paths, parent directory references, .cdo_* internal control files, and the current endpoint file itself are rejected.',
+            'Use relative paths only. Absolute paths, parent directory references, internal control files such as .cdo_*, .*_auth.json, .*_env.json, and .*_debug.log, and the current endpoint file itself are rejected.',
             'Before write/delete/rename, explain the target path to the user and get explicit confirmation.',
             'Use list_dir and read_file to verify targets before destructive or overwriting operations.',
             'write_file requires overwrite:true for existing files, preserves existing permissions on overwrite, and uses the server umask for new files.',
